@@ -44,7 +44,7 @@ orbit - CLI for running OrbitCode examples
 
 Usage:
   orbit clone <name>             Clone an example from orbitcode-ai/<name>
-  orbit init                     Create orbitcode.config.json in the current
+  orbit init                     Create myth.config.json in the current
                                  directory with a stable local projectId
   orbit run [--entry <file>]     Run the current directory as an OrbitCode app
               [--port <port>]    (default entry: src/main.tsx, src/App.tsx, App.tsx)
@@ -55,7 +55,7 @@ Usage:
 Examples:
   orbit clone reveal             # Clone the reveal example
   cd reveal
-  orbit init                     # Create orbitcode.config.json
+  orbit init                     # Create myth.config.json
   orbit run                      # Start the dev server
   orbit run --entry MyApp.tsx    # Use a different entry file
   orbit run --port 5174          # Pin to a port already in your OAuth origins
@@ -82,21 +82,21 @@ function generateLocalPid(seed: string): string {
 
 async function init() {
   const cwd = process.cwd();
-  const configPath = path.join(cwd, "orbitcode.config.json");
+  const configPath = path.join(cwd, "myth.config.json");
   let existing: Record<string, unknown> = {};
   if (existsSync(configPath)) {
     try {
       existing = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
     } catch (e) {
       console.error(
-        `orbitcode.config.json exists but isn't valid JSON: ${(e as Error).message}`,
+        `myth.config.json exists but isn't valid JSON: ${(e as Error).message}`,
       );
       process.exit(1);
     }
   }
   if (typeof existing.projectId === "string" && existing.projectId.length > 0) {
     console.log(
-      `orbitcode.config.json already initialized: projectId=${existing.projectId}`,
+      `myth.config.json already initialized: projectId=${existing.projectId}`,
     );
     console.log(`(at ${configPath})`);
     return;
@@ -138,7 +138,7 @@ async function run(runArgs: string[]) {
   const explicitEntry = parseEntry(runArgs);
   const explicitPort = parsePort(runArgs);
   const cwd = process.cwd();
-  // startServer walks up from `cwd` to find orbitcode.config.json and
+  // startServer walks up from `cwd` to find myth.config.json and
   // anchors vite to that directory. Entry resolution happens there too
   // (so `orbit run --entry src/main.tsx` is interpreted relative to the
   // workspace root, not the subdirectory we were invoked from).
