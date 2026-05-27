@@ -1,25 +1,87 @@
 import { createServer } from "vite";
-import preact from "@preact/preset-vite";
-import { orbitcodePlugin } from "./orbitcode-plugin.js";
-import { virtualHtmlPlugin } from "./virtual-html.js";
+import type { ProxyOptions } from "vite";
+import react from "@vitejs/plugin-react";
+import { mythPlugin } from "./myth-plugin.js";
+import { hostFramePlugin, loadConfigOrThrow, OrbitConfigError } from "./virtual-html.js";
 import { exec } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+
+/** Candidate entry files tried in order when `myth run` is invoked
+ * without --entry. Matches the conventions in modern mythwork apps:
+ * src/main.tsx (tennis, lab-nav), then ts/tsx variants, then the
+ * legacy single-file App.tsx layout from older examples. */
+const DEFAULT_ENTRY_CANDIDATES = [
+  "src/main.tsx",
+  "src/main.ts",
+  "src/App.tsx",
+  "App.tsx",
+];
+
+function resolveEntry(root: string, requested: string | undefined): string {
+  if (requested !== undefined) {
+    if (!existsSync(path.join(root, requested))) {
+      console.error(`[myth] entry not found: ${path.join(root, requested)}`);
+      process.exit(1);
+    }
+    return requested;
+  }
+  for (const candidate of DEFAULT_ENTRY_CANDIDATES) {
+    if (existsSync(path.join(root, candidate))) return candidate;
+  }
+  console.error(
+    `[myth] no entry file found in ${root}. Tried: ${DEFAULT_ENTRY_CANDIDATES.join(", ")}. ` +
+      `Pass --entry <file> to override.`,
+  );
+  process.exit(1);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const cliRoot = path.resolve(__dirname, "../..");
 
-const require = createRequire(import.meta.url);
+// Every URL prefix the production hosting worker serves. Anything under
+// these paths gets proxied through vite to the backend so the browser
+// hits localhost:5173 (first-party cookies) while the actual response
+// comes from api.orbitcode.app (or a local wrangler override).
+const BACKEND_PREFIXES = [
+  "/provision",
+  "/auth",
+  "/room",
+  "/cas",
+  "/sync",
+  "/publish",
+  "/secrets",
+  "/collab",
+  "/favorites",
+  "/templates",
+  "/billing",
+  "/stats",
+  "/discover",
+  "/dev",
+  "/admin",
+];
 
-// Resolve the ESM ("module") entry point for a preact subpackage
-function resolveEsm(pkg: string): string {
-  const pkgJsonPath = require.resolve(pkg + "/package.json");
-  const pkgDir = path.dirname(pkgJsonPath);
-  const pkgJson = JSON.parse(readFileSync(pkgJsonPath, "utf-8"));
-  return path.join(pkgDir, pkgJson.module);
+// Only paths that actually carry WebSocket upgrades need ws:true.
+// Setting ws:true on every prefix makes node-http-proxy hook into the
+// HTTP server's `upgrade` event broadly, which can starve vite's own
+// HMR WebSocket at `/` — the browser console fills with
+// `WebSocket connection to 'ws://localhost:5173/' failed`.
+const WS_PREFIXES = new Set(["/sync", "/collab"]);
+
+function buildBackendProxy(backendOrigin: string): Record<string, ProxyOptions> {
+  const proxy: Record<string, ProxyOptions> = {};
+  const secure = backendOrigin.startsWith("https:");
+  for (const p of BACKEND_PREFIXES) {
+    proxy[p] = {
+      target: backendOrigin,
+      changeOrigin: true,
+      ws: WS_PREFIXES.has(p),
+      secure,
+    };
+  }
+  return proxy;
 }
 
 /** Scan CSS files at the project root for bare @import specifiers (npm packages). */
@@ -37,7 +99,7 @@ function detectCssImports(root: string): string[] {
   return [...imports];
 }
 
-/** Resolve a CSS package's entry file from orbit-cli's node_modules. */
+/** Resolve a CSS package's entry file from myth-cli's node_modules. */
 function resolveCssEntry(pkg: string): string | null {
   const pkgDir = path.join(cliRoot, "node_modules", pkg);
   try {
@@ -57,24 +119,50 @@ function resolveCssEntry(pkg: string): string | null {
   }
 }
 
-export async function startServer(root: string, entry: string = "App.tsx") {
-  const preactPaths = {
-    "preact": resolveEsm("preact"),
-    "preact/compat": resolveEsm("preact/compat"),
-    "preact/hooks": resolveEsm("preact/hooks"),
-    "preact/jsx-runtime": resolveEsm("preact/jsx-runtime"),
-    "preact/jsx-dev-runtime": resolveEsm("preact/jsx-runtime"), // shares same module
-    "preact/debug": resolveEsm("preact/debug"),
-    "preact/devtools": resolveEsm("preact/devtools"),
-  };
+function resolveCollabUrl(backendOrigin: string): string {
+  if (process.env.ORBIT_COLLAB_URL) return process.env.ORBIT_COLLAB_URL;
+  if (backendOrigin.includes("localhost")) return "ws://localhost:1234";
+  return "wss://collab.orbitcode.ai";
+}
+
+export async function startServer(
+  start: string,
+  requestedEntry?: string,
+  requestedPort?: number,
+) {
+  const backendOrigin = process.env.MYTH_BACKEND_ORIGIN ?? "https://api.orbitcode.app";
+  const backendProxy = buildBackendProxy(backendOrigin);
+  const collabUrl = resolveCollabUrl(backendOrigin);
+
+  let loaded;
+  try {
+    loaded = loadConfigOrThrow(start);
+  } catch (e) {
+    if (e instanceof OrbitConfigError) {
+      console.error(`[myth] ${e.message}`);
+      process.exit(1);
+    }
+    throw e;
+  }
+  const config = loaded.config;
+  // Use the discovered config dir as vite's root so `cd src && myth
+  // run` resolves to the project workspace, not the subdirectory we
+  // were invoked from.
+  const root = loaded.root;
+  const entry = resolveEntry(root, requestedEntry);
 
   const plugins: import("vite").PluginOption[] = [
-    virtualHtmlPlugin(preactPaths, entry),
-    orbitcodePlugin(),
-    preact({ reactAliasesEnabled: false }),
+    hostFramePlugin({
+      projectId: config.projectId,
+      projectName: config.name,
+      backendOrigin,
+      entry,
+    }),
+    mythPlugin(),
+    react(),
   ];
 
-  // Auto-detect CSS dependencies and resolve them from orbit-cli's node_modules
+  // Auto-detect CSS dependencies and resolve them from myth-cli's node_modules
   const cssImports = detectCssImports(root);
   const cssAliases: Record<string, string> = {};
   const usesTailwind = cssImports.includes("tailwindcss");
@@ -95,26 +183,27 @@ export async function startServer(root: string, entry: string = "App.tsx") {
     root,
     configFile: false,
     plugins,
+    define: {
+      // @orbitcode/collab/collab-funcs checks `typeof __ORBIT_COLLAB_URL__
+      // === 'string'` at runtime and uses it instead of deriving from
+      // the page origin. Lets the app reach the prod collab server
+      // even when the host page is localhost:5173.
+      __ORBIT_COLLAB_URL__: JSON.stringify(collabUrl),
+    },
     resolve: {
       alias: {
         "@/": root + "/",
         ...cssAliases,
-        "react/jsx-runtime": preactPaths["preact/jsx-runtime"],
-        "react/jsx-dev-runtime": preactPaths["preact/jsx-dev-runtime"],
-        "react-dom/client": preactPaths["preact/compat"],
-        "react-dom/test-utils": preactPaths["preact/compat"],
-        "react-dom": preactPaths["preact/compat"],
-        "react": preactPaths["preact/compat"],
-        "preact/jsx-runtime": preactPaths["preact/jsx-runtime"],
-        "preact/jsx-dev-runtime": preactPaths["preact/jsx-dev-runtime"],
-        "preact/hooks": preactPaths["preact/hooks"],
-        "preact/compat": preactPaths["preact/compat"],
-        "preact/debug": preactPaths["preact/debug"],
-        "preact/devtools": preactPaths["preact/devtools"],
-        "preact": preactPaths["preact"],
       },
     },
     server: {
+      // `--port` (CLI) > config.devPort > vite default (5173). Tennis
+      // and lab-nav pre-myth-cli ran on specific ports registered in
+      // the Google OAuth client's Authorized JavaScript Origins; using
+      // a different port produces Error 400: origin_mismatch on sign-in.
+      port: requestedPort ?? (typeof config.devPort === "number" ? config.devPort : undefined),
+      strictPort: requestedPort !== undefined || typeof config.devPort === "number",
+      proxy: backendProxy,
       fs: {
         allow: [root, cliRoot],
       },
@@ -122,6 +211,9 @@ export async function startServer(root: string, entry: string = "App.tsx") {
   });
 
   await server.listen();
+  console.log(`[myth] backend proxy → ${backendOrigin}`);
+  console.log(`[myth] collab url   → ${collabUrl}`);
+  console.log(`[myth] project: ${config.name} (${config.projectId})`);
   server.printUrls();
 
   const url = server.resolvedUrls?.local[0];
