@@ -40,28 +40,28 @@ async function main() {
 
 function printHelp() {
   console.log(`
-orbit - CLI for running OrbitCode examples
+myth - CLI for running and publishing mythwork apps
 
 Usage:
-  orbit clone <name>             Clone an example from orbitcode-ai/<name>
-  orbit init                     Create myth.config.json in the current
+  myth clone <name>              Clone an example from mythwork-ai/<name>
+  myth init                      Create myth.config.json in the current
                                  directory with a stable local projectId
-  orbit run [--entry <file>]     Run the current directory as an OrbitCode app
-              [--port <port>]    (default entry: src/main.tsx, src/App.tsx, App.tsx)
-  orbit publish [--name <name>]  Build + upload the current project to the
-                [--prod]         publish worker. Default backend is staging
-                [--api <url>]    (api.llama.space); --prod uses api.myth.work.
+  myth run [--entry <file>]      Run the current directory as a mythwork app
+             [--port <port>]     (default entry: src/main.tsx, src/App.tsx, App.tsx)
+  myth publish [--name <name>]   Build + upload the current project to the
+               [--staging]       publish worker. Default backend is prod
+               [--api <url>]     (api.myth.work); --staging uses api.llama.space.
 
 Examples:
-  orbit clone reveal             # Clone the reveal example
+  myth clone reveal              # Clone the reveal example
   cd reveal
-  orbit init                     # Create myth.config.json
-  orbit run                      # Start the dev server
-  orbit run --entry MyApp.tsx    # Use a different entry file
-  orbit run --port 5174          # Pin to a port already in your OAuth origins
-  orbit publish                  # Publish to staging, canonical URL only
-  orbit publish --name my-app    # Publish with alias my-app.llama.space
-  orbit publish --name my-app --prod   # Publish to api.myth.work
+  myth init                      # Create myth.config.json
+  myth run                       # Start the dev server
+  myth run --entry MyApp.tsx     # Use a different entry file
+  myth run --port 5174           # Pin to a port already in your OAuth origins
+  myth publish                   # Publish to prod, canonical URL only
+  myth publish --name my-app     # Publish with alias my-app.myth.work
+  myth publish --name my-app --staging   # Publish to api.llama.space
 `);
 }
 
@@ -73,7 +73,7 @@ Examples:
  * Local-only: real apps publishing to production should re-mint via
  * the production /provision flow (browser-based Turnstile + DT cookie)
  * and overwrite this value. For local development against either
- * `orbit run` or `make tennis-dev`, a stable hash is enough.
+ * `myth run` or `make tennis-dev`, a stable hash is enough.
  */
 function generateLocalPid(seed: string): string {
   const hex = createHash("sha256").update(seed).digest("hex");
@@ -113,21 +113,21 @@ async function init() {
   console.log(`Created ${configPath}`);
   console.log(`  projectId: ${projectId}`);
   console.log(`  name:      ${name}`);
-  console.log(`Run \`orbit run\` to start the dev server.`);
+  console.log(`Run \`myth run\` to start the dev server.`);
 }
 
 async function clone(name: string | undefined) {
   if (!name) {
-    console.error("Usage: orbit clone <name>");
+    console.error("Usage: myth clone <name>");
     process.exit(1);
   }
 
-  const repoUrl = `https://github.com/orbitcode-ai/${name}`;
+  const repoUrl = `https://github.com/mythwork-ai/${name}`;
   console.log(`Cloning ${repoUrl}...`);
 
   try {
     execSync(`git clone ${repoUrl}`, { stdio: "inherit" });
-    console.log(`\nCloned into ${name}\n\nRun:\n  cd ${name}\n  orbit run`);
+    console.log(`\nCloned into ${name}\n\nRun:\n  cd ${name}\n  myth run`);
   } catch {
     console.error(`Failed to clone ${repoUrl}`);
     process.exit(1);
@@ -140,7 +140,7 @@ async function run(runArgs: string[]) {
   const cwd = process.cwd();
   // startServer walks up from `cwd` to find myth.config.json and
   // anchors vite to that directory. Entry resolution happens there too
-  // (so `orbit run --entry src/main.tsx` is interpreted relative to the
+  // (so `myth run --entry src/main.tsx` is interpreted relative to the
   // workspace root, not the subdirectory we were invoked from).
   const { startServer } = await import("../src/run.js");
   await startServer(cwd, explicitEntry, explicitPort);
@@ -149,7 +149,7 @@ async function run(runArgs: string[]) {
 async function publish(pubArgs: string[]) {
   const shortName = parseStringFlag(pubArgs, "--name");
   const apiUrl = parseStringFlag(pubArgs, "--api");
-  const prod = pubArgs.includes("--prod");
+  const staging = pubArgs.includes("--staging");
   const explicitEntry = parseEntry(pubArgs);
   const { publishCommand } = await import("../src/publish/index.js");
   const { PublishError } = await import("../src/publish/client.js");
@@ -158,22 +158,22 @@ async function publish(pubArgs: string[]) {
     await publishCommand({
       cwd: process.cwd(),
       shortName,
-      prod,
+      staging,
       apiUrl,
       entry: explicitEntry,
     });
   } catch (err) {
     if (err instanceof PublishError) {
-      console.error(`[orbit] ${err.message}`);
+      console.error(`[myth] ${err.message}`);
       process.exit(1);
     }
     if (err instanceof HandshakeTimeoutError) {
-      console.error(`[orbit] ${err.message}`);
-      console.error("[orbit] No sign-in received. Re-run `orbit publish`.");
+      console.error(`[myth] ${err.message}`);
+      console.error("[myth] No sign-in received. Re-run `myth publish`.");
       process.exit(1);
     }
     // Fall-through for OrbitConfigError + anything else.
-    console.error(`[orbit] ${(err as Error).message ?? err}`);
+    console.error(`[myth] ${(err as Error).message ?? err}`);
     process.exit(1);
   }
 }

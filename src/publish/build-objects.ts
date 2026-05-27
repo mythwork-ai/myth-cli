@@ -73,8 +73,8 @@ interface TreeEntry {
  * and emit the full git object graph. Returns the in-memory object map
  * plus the commit and root-tree hashes the worker needs to finalize.
  *
- * Vite plugin set mirrors `orbit run` (the orbitcode plugin + react), so
- * apps that work under `orbit run` will build under `orbit publish`
+ * Vite plugin set mirrors `myth run` (the myth plugin + react), so
+ * apps that work under `myth run` will build under `myth publish`
  * without surprises. We intentionally do NOT inject the host-frame
  * wrapper (that's a dev-loop convenience, not a production deploy
  * artifact — see spec "What gets bundled").
@@ -204,9 +204,9 @@ async function buildCommit(input: CommitInput): Promise<BuiltObject> {
   // Stable timestamp by default so identical bundles produce identical
   // commits across machines and re-runs. Callers can override for tests.
   const ts = input.timestamp ?? 0
-  const author = input.author ?? 'orbit-cli <noreply@orbitcode.ai>'
+  const author = input.author ?? 'myth-cli <noreply@myth.work>'
   const committer = input.committer ?? author
-  const message = input.message ?? 'orbit publish\n'
+  const message = input.message ?? 'myth publish\n'
   const lines = [`tree ${input.tree}`]
   lines.push(`author ${author} ${ts} +0000`)
   lines.push(`committer ${committer} ${ts} +0000`)

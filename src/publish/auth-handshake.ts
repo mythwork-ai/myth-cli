@@ -1,8 +1,8 @@
 /**
- * Browser-mediated OAuth handshake for `orbit publish`. Spawns a tiny
+ * Browser-mediated OAuth handshake for `myth publish`. Spawns a tiny
  * HTTP listener on 127.0.0.1:<random port>, opens the user's browser to
  * `<authOrigin>/cli-auth?nonce=...&callback=http://127.0.0.1:<port>/cb`,
- * and waits for the orbitcode.ai page to POST the session JWT back.
+ * and waits for the auth.{zone} page to POST the session JWT back.
  *
  *   1. Generate a 32-byte CSRF nonce. Held in memory only.
  *   2. Bind 127.0.0.1 on an OS-assigned port (loopback only, no LAN
@@ -13,7 +13,7 @@
  *      server-side on every subsequent request).
  *   6. Resolve with { sessionToken, userEmail, userId }.
  *
- * No persistence — each `orbit publish` triggers a fresh handshake.
+ * No persistence — each `myth publish` triggers a fresh handshake.
  * Spec defers token caching to a future `--remember` flag.
  */
 
@@ -31,12 +31,12 @@ export interface HandshakeResult {
   userEmail: string | null
   /** From the JWT `sub` claim. Display only. */
   userId: string | null
-  /** From the orbitcode.ai POST. Optional. */
+  /** From the auth.{zone} POST. Optional. */
   userName: string | null
 }
 
 export interface HandshakeOptions {
-  /** Origin of the auth host (e.g. https://orbitcode.ai). No trailing slash. */
+  /** Origin of the auth host (e.g. https://auth.myth.work). No trailing slash. */
   authOrigin: string
   /** How long to wait before giving up. Default 5 minutes. */
   timeoutMs?: number
@@ -68,15 +68,15 @@ export async function runAuthHandshake(opts: HandshakeOptions): Promise<Handshak
     `?nonce=${encodeURIComponent(nonce)}` +
     `&callback=${encodeURIComponent(callbackUrl)}`
 
-  log('[orbit] Open this URL to sign in:')
-  log(`[orbit]   ${authUrl}`)
+  log('[myth] Open this URL to sign in:')
+  log(`[myth]   ${authUrl}`)
 
   if (opts.openBrowser !== false) {
     tryOpenBrowser(authUrl)
   }
 
   const minutes = Math.round(timeoutMs / 60000)
-  log(`[orbit] Waiting for sign-in (will time out in ${minutes} min)...`)
+  log(`[myth] Waiting for sign-in (will time out in ${minutes} min)...`)
 
   try {
     return await waitForCallback(server, nonce, timeoutMs)

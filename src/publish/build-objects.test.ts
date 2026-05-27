@@ -23,7 +23,7 @@ import { hashDirectory } from './build-objects.js'
 const HEX_64 = /^[0-9a-f]{64}$/
 
 async function makeFixture(): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), 'orbit-publish-build-'))
+  const root = await mkdtemp(path.join(tmpdir(), 'myth-publish-build-'))
   await writeFile(path.join(root, 'index.html'), '<!doctype html><h1>Hello</h1>\n')
   await mkdir(path.join(root, 'assets'))
   await writeFile(path.join(root, 'assets', 'app.js'), 'console.log("hi")\n')
@@ -79,7 +79,7 @@ describe('hashDirectory', () => {
     const framed = Buffer.concat([Buffer.from(`blob ${content.length}\0`, 'utf-8'), content])
     const expectedHash = createHash('sha256').update(framed).digest('hex')
 
-    const root = await mkdtemp(path.join(tmpdir(), 'orbit-publish-hash-'))
+    const root = await mkdtemp(path.join(tmpdir(), 'myth-publish-hash-'))
     await writeFile(path.join(root, 'only.txt'), content)
     const result = await hashDirectory(root)
     // The blob hash should appear in the object map.
@@ -92,7 +92,7 @@ describe('hashDirectory', () => {
   })
 
   it('empty directory still emits a tree + commit', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'orbit-publish-empty-'))
+    const root = await mkdtemp(path.join(tmpdir(), 'myth-publish-empty-'))
     const result = await hashDirectory(root)
     // 1 empty tree + 1 commit = 2 objects, 0 files
     expect(result.fileCount).toBe(0)

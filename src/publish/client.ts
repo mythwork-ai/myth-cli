@@ -291,7 +291,7 @@ export async function mapErrorResponse(
   if (status === 401) {
     return new PublishError(
       'session_expired',
-      'Session expired. Re-run `orbit publish`.',
+      'Session expired. Re-run `myth publish`.',
       { status, hash: ctx.hash, shortName: ctx.shortName },
     )
   }
