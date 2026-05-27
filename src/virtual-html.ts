@@ -22,7 +22,7 @@ const CREATE_HINT =
 
 /**
  * Walk up from `start` looking for myth.config.json. Returns the
- * directory containing it. This is how `orbit run` finds the project
+ * directory containing it. This is how `myth run` finds the project
  * root regardless of which subdirectory the user invoked from — same
  * pattern as `npm`/`git`/`cargo` walking up to find package.json /
  * .git / Cargo.toml.
@@ -46,7 +46,7 @@ export interface LoadedConfig {
 /**
  * Load myth.config.json by walking up from `start`. Errors out if
  * the file isn't found anywhere up the tree or `projectId` is absent
- * — orbit run only works against a provisioned project (or a stable
+ * — myth run only works against a provisioned project (or a stable
  * dev pid the user pasted).
  */
 export function loadConfigOrThrow(start: string): LoadedConfig {
@@ -114,7 +114,7 @@ function generateWrapperHtml(opts: WrapperOptions, config: OrbitConfig): string 
   </style>
   <!--
     Loaded RELATIVE so vite's proxy forwards it to the backend
-    (api.orbitcode.app by default; override with ORBIT_BACKEND_ORIGIN).
+    (api.orbitcode.app by default; override with MYTH_BACKEND_ORIGIN).
     The worker inlines window.__OC_HOST_CONFIG into this bundle so
     googleClientId is available without a separate fetch.
   -->
@@ -152,7 +152,7 @@ function generateWrapperHtml(opts: WrapperOptions, config: OrbitConfig): string 
     function bootHostFrame() {
       var hf = window.__hf;
       if (!hf) {
-        console.error('[orbit] host-frame bundle not loaded from /dev/host-frame.js');
+        console.error('[myth] host-frame bundle not loaded from /dev/host-frame.js');
         return;
       }
       var serverConfig = window.__OC_HOST_CONFIG || {};
@@ -174,7 +174,7 @@ function generateWrapperHtml(opts: WrapperOptions, config: OrbitConfig): string 
           bootHostFrame();
         } else if (++attempts > 50) {
           clearInterval(id);
-          console.error('[orbit] host-frame bundle never loaded after 5s. Backend down?');
+          console.error('[myth] host-frame bundle never loaded after 5s. Backend down?');
         }
       }, 100);
     }
@@ -238,7 +238,7 @@ export function hostFramePlugin(opts: HostFramePluginOptions): Plugin {
   const virtualEntry = buildVirtualEntry(opts.entry);
 
   return {
-    name: "orbit-host-frame",
+    name: "myth-host-frame",
     enforce: "pre",
 
     configResolved(config) {

@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config'
 
 /**
- * Unit tests for `orbit publish`. Node environment because the CLI is
+ * Unit tests for `myth publish`. Node environment because the CLI is
  * Node-native (uses node:http, node:crypto, node:zlib). No browser
  * polyfills needed.
  */

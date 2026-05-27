@@ -7,7 +7,7 @@ const __dirname = path.dirname(__filename);
 const cliRoot = path.resolve(__dirname, "../..");
 const cliPackageJson = path.join(cliRoot, "package.json");
 
-// Modules that should resolve from orbit-cli's own node_modules (not the
+// Modules that should resolve from myth-cli's own node_modules (not the
 // user project's). Everything else that's a bare import falls through to
 // the esm.sh redirect below so apps can `import 'three'` etc. without
 // having to npm install it locally.
@@ -24,7 +24,7 @@ const KNOWN_MODULES = new Set([
  * Minimal vite plugin that lets app source bare-import packages from
  * esm.sh (three, reveal.js, etc.) without having to install them.
  *
- * Known modules (react family) resolve from orbit-cli's node_modules so
+ * Known modules (react family) resolve from myth-cli's node_modules so
  * there's exactly one copy in the runtime. Everything else gets
  * redirected to esm.sh with react externalized so the CDN bundle uses
  * the same react instance the app does.

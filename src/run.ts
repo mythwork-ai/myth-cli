@@ -8,8 +8,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 
-/** Candidate entry files tried in order when `orbit run` is invoked
- * without --entry. Matches the conventions in modern OrbitCode apps:
+/** Candidate entry files tried in order when `myth run` is invoked
+ * without --entry. Matches the conventions in modern mythwork apps:
  * src/main.tsx (tennis, lab-nav), then ts/tsx variants, then the
  * legacy single-file App.tsx layout from older examples. */
 const DEFAULT_ENTRY_CANDIDATES = [
@@ -22,7 +22,7 @@ const DEFAULT_ENTRY_CANDIDATES = [
 function resolveEntry(root: string, requested: string | undefined): string {
   if (requested !== undefined) {
     if (!existsSync(path.join(root, requested))) {
-      console.error(`[orbit] entry not found: ${path.join(root, requested)}`);
+      console.error(`[myth] entry not found: ${path.join(root, requested)}`);
       process.exit(1);
     }
     return requested;
@@ -31,7 +31,7 @@ function resolveEntry(root: string, requested: string | undefined): string {
     if (existsSync(path.join(root, candidate))) return candidate;
   }
   console.error(
-    `[orbit] no entry file found in ${root}. Tried: ${DEFAULT_ENTRY_CANDIDATES.join(", ")}. ` +
+    `[myth] no entry file found in ${root}. Tried: ${DEFAULT_ENTRY_CANDIDATES.join(", ")}. ` +
       `Pass --entry <file> to override.`,
   );
   process.exit(1);
@@ -99,7 +99,7 @@ function detectCssImports(root: string): string[] {
   return [...imports];
 }
 
-/** Resolve a CSS package's entry file from orbit-cli's node_modules. */
+/** Resolve a CSS package's entry file from myth-cli's node_modules. */
 function resolveCssEntry(pkg: string): string | null {
   const pkgDir = path.join(cliRoot, "node_modules", pkg);
   try {
@@ -130,7 +130,7 @@ export async function startServer(
   requestedEntry?: string,
   requestedPort?: number,
 ) {
-  const backendOrigin = process.env.ORBIT_BACKEND_ORIGIN ?? "https://api.orbitcode.app";
+  const backendOrigin = process.env.MYTH_BACKEND_ORIGIN ?? "https://api.orbitcode.app";
   const backendProxy = buildBackendProxy(backendOrigin);
   const collabUrl = resolveCollabUrl(backendOrigin);
 
@@ -139,13 +139,13 @@ export async function startServer(
     loaded = loadConfigOrThrow(start);
   } catch (e) {
     if (e instanceof OrbitConfigError) {
-      console.error(`[orbit] ${e.message}`);
+      console.error(`[myth] ${e.message}`);
       process.exit(1);
     }
     throw e;
   }
   const config = loaded.config;
-  // Use the discovered config dir as vite's root so `cd src && orbit
+  // Use the discovered config dir as vite's root so `cd src && myth
   // run` resolves to the project workspace, not the subdirectory we
   // were invoked from.
   const root = loaded.root;
@@ -162,7 +162,7 @@ export async function startServer(
     react(),
   ];
 
-  // Auto-detect CSS dependencies and resolve them from orbit-cli's node_modules
+  // Auto-detect CSS dependencies and resolve them from myth-cli's node_modules
   const cssImports = detectCssImports(root);
   const cssAliases: Record<string, string> = {};
   const usesTailwind = cssImports.includes("tailwindcss");
@@ -198,7 +198,7 @@ export async function startServer(
     },
     server: {
       // `--port` (CLI) > config.devPort > vite default (5173). Tennis
-      // and lab-nav pre-orbit-cli ran on specific ports registered in
+      // and lab-nav pre-myth-cli ran on specific ports registered in
       // the Google OAuth client's Authorized JavaScript Origins; using
       // a different port produces Error 400: origin_mismatch on sign-in.
       port: requestedPort ?? (typeof config.devPort === "number" ? config.devPort : undefined),
@@ -211,9 +211,9 @@ export async function startServer(
   });
 
   await server.listen();
-  console.log(`[orbit] backend proxy → ${backendOrigin}`);
-  console.log(`[orbit] collab url   → ${collabUrl}`);
-  console.log(`[orbit] project: ${config.name} (${config.projectId})`);
+  console.log(`[myth] backend proxy → ${backendOrigin}`);
+  console.log(`[myth] collab url   → ${collabUrl}`);
+  console.log(`[myth] project: ${config.name} (${config.projectId})`);
   server.printUrls();
 
   const url = server.resolvedUrls?.local[0];
