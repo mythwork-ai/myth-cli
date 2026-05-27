@@ -29,9 +29,9 @@ const KNOWN_MODULES = new Set([
  * redirected to esm.sh with react externalized so the CDN bundle uses
  * the same react instance the app does.
  */
-export function orbitcodePlugin(): Plugin {
+export function mythPlugin(): Plugin {
   return {
-    name: "orbitcode",
+    name: "myth",
     enforce: "pre",
 
     async resolveId(id, importer, options) {

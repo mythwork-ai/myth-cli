@@ -1,7 +1,7 @@
 import { createServer } from "vite";
 import type { ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
-import { orbitcodePlugin } from "./orbitcode-plugin.js";
+import { mythPlugin } from "./myth-plugin.js";
 import { hostFramePlugin, loadConfigOrThrow, OrbitConfigError } from "./virtual-html.js";
 import { exec } from "node:child_process";
 import path from "node:path";
@@ -158,7 +158,7 @@ export async function startServer(
       backendOrigin,
       entry,
     }),
-    orbitcodePlugin(),
+    mythPlugin(),
     react(),
   ];
 

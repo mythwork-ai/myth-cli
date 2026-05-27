@@ -1,10 +1,10 @@
 {
-  "name": "orbit",
+  "name": "myth",
   "version": "0.1.0",
-  "description": "CLI for running OrbitCode examples",
+  "description": "CLI for running and publishing mythwork apps",
   "type": "module",
   "bin": {
-    "orbit": "./dist/bin/orbit.js"
+    "myth": "./dist/bin/myth.js"
   },
   "scripts": {
     "build": "tsc",
