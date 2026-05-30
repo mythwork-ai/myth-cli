@@ -7,9 +7,14 @@
  *   3. POST /publish                — finalize; returns canonical +
  *                                     optional alias URL.
  *
- * Every request carries `Authorization: Bearer <jwt>` and `X-Scope:
- * publish:{shortName}:{rootTree}` (or `publish:_canonical:{rootTree}`
- * for canonical-only publishes; see spec Open Question #1).
+ * Every request carries `Authorization: Bearer <jwt>`. The blob "scope"
+ * (GC-ownership key) is NOT client-supplied — the worker derives it
+ * server-side from the authenticated user (`publish:{userId}:{shortName||
+ * _canonical}:{rootTree}`), so a caller can only ever own its own scope.
+ * We just send the inputs the worker needs: the content address
+ * (`rootTree`) and the optional alias `shortName`. /check carries them in
+ * the JSON body; each blob PUT carries them as `X-Root-Tree` /
+ * `X-Short-Name` headers; /publish derives the tree from the commit.
  *
  * Retry policy: each blob PUT retries up to 3 times on network errors /
  * 5xx with exponential backoff (250ms, 500ms, 1s). Check + finalize are
@@ -31,8 +36,18 @@ export interface PublishClientOptions {
   apiUrl: string
   /** Session JWT from the auth handshake. */
   sessionToken: string
-  /** Computed once per publish; sent on every request. */
-  scope: string
+  /**
+   * Root tree hash (64 lowercase hex). Sent on /check and every blob PUT
+   * so the worker can derive the GC scope server-side. Computed once per
+   * publish.
+   */
+  rootTree: string
+  /**
+   * Optional alias short-name (becomes `{name}.{zone}`). Sent alongside
+   * `rootTree` so the worker derives a per-name scope; omitted entirely
+   * for canonical-only publishes (the worker uses `_canonical`).
+   */
+  shortName?: string
   /** Optional progress callback for upload UI. */
   onProgress?: (event: ProgressEvent) => void
   /** Override the fetch implementation (tests). */
@@ -77,47 +92,42 @@ export class PublishError extends Error {
   }
 }
 
-/**
- * Build the X-Scope header string. Per spec Open Q #1, the blob worker
- * requires non-empty scope segments; we use `_canonical` as the
- * shortName placeholder when the caller didn't request an alias.
- */
-export function buildScope(rootTree: string, shortName: string | undefined): string {
-  const sn = shortName && shortName.length > 0 ? shortName : '_canonical'
-  return `publish:${sn}:${rootTree}`
-}
-
 // ===========================================================================
 // Step 1: /publish/check
 // ===========================================================================
 
 /**
  * POST /publish/check with the full hash list. Worker writes refs for
- * any dedup-hit hashes server-side and returns the list of hashes that
- * still need uploading.
+ * any dedup-hit hashes server-side (under the scope it derives from
+ * `rootTree` + `shortName` + the authenticated user) and returns the
+ * list of hashes that still need uploading.
  */
 export async function checkBlobs(
   hashes: string[],
   opts: PublishClientOptions,
 ): Promise<string[]> {
   const fetchImpl = opts.fetch ?? fetch
+  const reqBody: { hashes: string[]; rootTree: string; shortName?: string } = {
+    hashes,
+    rootTree: opts.rootTree,
+  }
+  if (opts.shortName) reqBody.shortName = opts.shortName
   const res = await fetchImpl(`${opts.apiUrl}/publish/check`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${opts.sessionToken}`,
-      'X-Scope': opts.scope,
     },
-    body: JSON.stringify({ hashes }),
+    body: JSON.stringify(reqBody),
   })
   if (!res.ok) {
     throw await mapErrorResponse(res, { context: 'check' })
   }
-  const body = (await res.json()) as { missing?: unknown }
-  if (!Array.isArray(body.missing)) {
+  const resBody = (await res.json()) as { missing?: unknown }
+  if (!Array.isArray(resBody.missing)) {
     throw new PublishError('unknown', 'malformed /publish/check response')
   }
-  return body.missing.map(String)
+  return resBody.missing.map(String)
 }
 
 // ===========================================================================
@@ -179,14 +189,16 @@ async function putBlobWithRetry(obj: BuiltObject, opts: PublishClientOptions): P
       await sleep(PUT_RETRY_DELAYS_MS[attempt - 1]!)
     }
     let res: Response
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/octet-stream',
+      Authorization: `Bearer ${opts.sessionToken}`,
+      'X-Root-Tree': opts.rootTree,
+    }
+    if (opts.shortName) headers['X-Short-Name'] = opts.shortName
     try {
       res = await fetchImpl(`${opts.apiUrl}/publish/blob/${obj.hash}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          Authorization: `Bearer ${opts.sessionToken}`,
-          'X-Scope': opts.scope,
-        },
+        headers,
         // Node's fetch accepts Uint8Array (or Buffer) directly; the DOM
         // BodyInit typing is narrower than Node's so we cast through.
         body: obj.deflated as unknown as BodyInit,
@@ -220,23 +232,21 @@ async function putBlobWithRetry(obj: BuiltObject, opts: PublishClientOptions): P
  */
 export async function finalizePublish(
   headCommit: string,
-  shortName: string | undefined,
   opts: PublishClientOptions,
 ): Promise<FinalizeResult> {
   const fetchImpl = opts.fetch ?? fetch
   const body: Record<string, string> = { headCommit }
-  if (shortName) body.shortName = shortName
+  if (opts.shortName) body.shortName = opts.shortName
   const res = await fetchImpl(`${opts.apiUrl}/publish`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${opts.sessionToken}`,
-      'X-Scope': opts.scope,
     },
     body: JSON.stringify(body),
   })
   if (!res.ok) {
-    throw await mapErrorResponse(res, { context: 'publish', shortName })
+    throw await mapErrorResponse(res, { context: 'publish', shortName: opts.shortName })
   }
   const parsed = (await res.json()) as {
     commit?: unknown

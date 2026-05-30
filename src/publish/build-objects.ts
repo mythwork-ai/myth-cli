@@ -48,7 +48,11 @@ export interface BuildResult {
   objects: Map<string, BuiltObject>
   /** 64-hex SHA-256 of the commit object. Goes in POST /publish body. */
   headCommit: string
-  /** 64-hex SHA-256 of the root tree. Goes in the X-Scope header. */
+  /**
+   * 64-hex SHA-256 of the root tree. Sent in the /check body and as the
+   * `X-Root-Tree` header on each blob PUT so the worker can derive the
+   * GC scope server-side.
+   */
   rootTree: string
   /** Total file count (for progress logging). */
   fileCount: number

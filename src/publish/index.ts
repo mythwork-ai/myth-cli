@@ -22,7 +22,6 @@ import { loadConfigOrThrow, OrbitConfigError } from '../virtual-html.js'
 import { buildAndHash } from './build-objects.js'
 import { runAuthHandshake } from './auth-handshake.js'
 import {
-  buildScope,
   checkBlobs,
   finalizePublish,
   PublishError,
@@ -131,14 +130,15 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   const who = handshake.userEmail ?? handshake.userId ?? '(unknown user)'
   console.log(`[myth] ✓ Signed in as ${who}`)
 
-  // 3. Check.
-  const scope = buildScope(built.rootTree, shortName)
+  // 3. Check. The worker derives the GC scope server-side from the
+  // authenticated user + rootTree + shortName; we only send those inputs.
   const allHashes = [...built.objects.keys()]
   console.log(`[myth] Checking blob storage (${allHashes.length} objects)...`)
   const missing = await checkBlobs(allHashes, {
     apiUrl,
     sessionToken: handshake.sessionToken,
-    scope,
+    rootTree: built.rootTree,
+    shortName,
   })
   const already = allHashes.length - missing.length
   console.log(`[myth] ${already} already stored, ${missing.length} to upload.`)
@@ -158,7 +158,8 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     await uploadBlobs(toUpload, {
       apiUrl,
       sessionToken: handshake.sessionToken,
-      scope,
+      rootTree: built.rootTree,
+      shortName,
       onProgress: e => {
         if (e.kind === 'uploaded') {
           progress.update(e.index, e.total)
@@ -170,10 +171,11 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
 
   // 5. Finalize.
   console.log('[myth] Finalizing...')
-  const result = await finalizePublish(built.headCommit, shortName, {
+  const result = await finalizePublish(built.headCommit, {
     apiUrl,
     sessionToken: handshake.sessionToken,
-    scope,
+    rootTree: built.rootTree,
+    shortName,
   })
   console.log('[myth] ✓ Published.')
   const zoneSuffix = inferZoneSuffix(apiUrl)
