@@ -2,9 +2,11 @@
  * Tests for the publish-worker HTTP client. The `fetch` boundary is
  * mocked — we never hit a real backend. Assertions cover:
  *
- *   - Authorization + X-Scope are attached to every request.
- *   - buildScope handles canonical-only (no shortName) and aliased
- *     publishes per spec Open Q #1.
+ *   - Authorization is attached to every request; the blob scope is NOT
+ *     client-supplied. Instead we send the worker the inputs it derives
+ *     scope from: `rootTree` (+ optional `shortName`) in the /check body
+ *     and as `X-Root-Tree` / `X-Short-Name` headers on each blob PUT.
+ *   - The canonical-only path (no shortName) omits shortName entirely.
  *   - Error mapping for 401/403/413/502/400 produces the documented
  *     CLI messages.
  *   - uploadBlobs retries on 5xx and throws on the 4th failure.
@@ -13,7 +15,6 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import {
-  buildScope,
   checkBlobs,
   finalizePublish,
   mapErrorResponse,
@@ -24,7 +25,8 @@ import type { BuiltObject } from './build-objects.js'
 
 const TOKEN = 'fake.session.jwt'
 const API = 'https://api.test.example'
-const SCOPE = 'publish:demo:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+const ROOT_TREE = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+const SHORT_NAME = 'demo'
 
 function jsonRes(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -41,20 +43,8 @@ function fakeBlob(hash: string, bytes = 16): BuiltObject {
   }
 }
 
-describe('buildScope', () => {
-  it('uses the provided shortName segment', () => {
-    expect(buildScope('a'.repeat(64), 'my-app')).toBe('publish:my-app:' + 'a'.repeat(64))
-  })
-  it('uses _canonical placeholder when shortName is missing', () => {
-    expect(buildScope('a'.repeat(64), undefined)).toBe('publish:_canonical:' + 'a'.repeat(64))
-  })
-  it('uses _canonical for empty string too', () => {
-    expect(buildScope('a'.repeat(64), '')).toBe('publish:_canonical:' + 'a'.repeat(64))
-  })
-})
-
 describe('checkBlobs', () => {
-  it('sends Authorization + X-Scope, returns missing array', async () => {
+  it('sends Authorization + rootTree/shortName in the body (no X-Scope), returns missing array', async () => {
     const calls: { url: string; init?: RequestInit }[] = []
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: String(url), init })
@@ -63,7 +53,8 @@ describe('checkBlobs', () => {
     const result = await checkBlobs(['h1', 'h2', 'h3'], {
       apiUrl: API,
       sessionToken: TOKEN,
-      scope: SCOPE,
+      rootTree: ROOT_TREE,
+      shortName: SHORT_NAME,
       fetch: fakeFetch,
     })
     expect(result).toEqual(['h1', 'h2'])
@@ -71,40 +62,62 @@ describe('checkBlobs', () => {
     expect(calls[0]!.url).toBe(`${API}/publish/check`)
     const headers = new Headers(calls[0]!.init?.headers)
     expect(headers.get('Authorization')).toBe(`Bearer ${TOKEN}`)
-    expect(headers.get('X-Scope')).toBe(SCOPE)
+    expect(headers.get('X-Scope')).toBeNull()
     expect(headers.get('Content-Type')).toBe('application/json')
-    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ hashes: ['h1', 'h2', 'h3'] })
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
+      hashes: ['h1', 'h2', 'h3'],
+      rootTree: ROOT_TREE,
+      shortName: SHORT_NAME,
+    })
+  })
+
+  it('omits shortName from the body on a canonical-only publish', async () => {
+    let sentBody: Record<string, unknown> = {}
+    const fakeFetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      sentBody = JSON.parse(String(init?.body))
+      return jsonRes({ missing: [] })
+    }) as unknown as typeof fetch
+    await checkBlobs(['h1'], {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      rootTree: ROOT_TREE,
+      fetch: fakeFetch,
+    })
+    expect(sentBody).toEqual({ hashes: ['h1'], rootTree: ROOT_TREE })
+    expect('shortName' in sentBody).toBe(false)
   })
 
   it('maps 401 to session_expired', async () => {
     const fakeFetch = vi.fn(async () => jsonRes({ error: 'unauthorized' }, 401)) as unknown as typeof fetch
     await expect(
-      checkBlobs(['h'], { apiUrl: API, sessionToken: TOKEN, scope: SCOPE, fetch: fakeFetch }),
+      checkBlobs(['h'], { apiUrl: API, sessionToken: TOKEN, rootTree: ROOT_TREE, fetch: fakeFetch }),
     ).rejects.toMatchObject({ code: 'session_expired' })
   })
 
   it('maps 400 to bad_bundle', async () => {
     const fakeFetch = vi.fn(async () => jsonRes({ error: 'bad' }, 400)) as unknown as typeof fetch
     await expect(
-      checkBlobs(['h'], { apiUrl: API, sessionToken: TOKEN, scope: SCOPE, fetch: fakeFetch }),
+      checkBlobs(['h'], { apiUrl: API, sessionToken: TOKEN, rootTree: ROOT_TREE, fetch: fakeFetch }),
     ).rejects.toMatchObject({ code: 'bad_bundle' })
   })
 
   it('throws on malformed response (no `missing` array)', async () => {
     const fakeFetch = vi.fn(async () => jsonRes({})) as unknown as typeof fetch
     await expect(
-      checkBlobs(['h'], { apiUrl: API, sessionToken: TOKEN, scope: SCOPE, fetch: fakeFetch }),
+      checkBlobs(['h'], { apiUrl: API, sessionToken: TOKEN, rootTree: ROOT_TREE, fetch: fakeFetch }),
     ).rejects.toMatchObject({ code: 'unknown' })
   })
 })
 
 describe('uploadBlobs', () => {
-  it('PUTs each blob with Authorization + X-Scope, calls onProgress', async () => {
+  it('PUTs each blob with Authorization + X-Root-Tree/X-Short-Name (no X-Scope), calls onProgress', async () => {
     const calls: string[] = []
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers)
       expect(headers.get('Authorization')).toBe(`Bearer ${TOKEN}`)
-      expect(headers.get('X-Scope')).toBe(SCOPE)
+      expect(headers.get('X-Scope')).toBeNull()
+      expect(headers.get('X-Root-Tree')).toBe(ROOT_TREE)
+      expect(headers.get('X-Short-Name')).toBe(SHORT_NAME)
       expect(init?.method).toBe('PUT')
       calls.push(String(url))
       return new Response(null, { status: 200 })
@@ -115,7 +128,8 @@ describe('uploadBlobs', () => {
     await uploadBlobs(blobs, {
       apiUrl: API,
       sessionToken: TOKEN,
-      scope: SCOPE,
+      rootTree: ROOT_TREE,
+      shortName: SHORT_NAME,
       fetch: fakeFetch,
       onProgress: e => {
         if (e.kind === 'uploaded') progress.push(e.index)
@@ -124,6 +138,23 @@ describe('uploadBlobs', () => {
     expect(calls).toHaveLength(3)
     expect(progress.sort()).toEqual([1, 2, 3])
     for (const u of calls) expect(u).toMatch(new RegExp(`^${API}/publish/blob/[a-f0-9]{64}$`))
+  })
+
+  it('omits X-Short-Name on a canonical-only publish', async () => {
+    let sawShortName = true
+    const fakeFetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      expect(headers.get('X-Root-Tree')).toBe(ROOT_TREE)
+      sawShortName = headers.has('X-Short-Name')
+      return new Response(null, { status: 200 })
+    }) as unknown as typeof fetch
+    await uploadBlobs([fakeBlob('a'.repeat(64))], {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      rootTree: ROOT_TREE,
+      fetch: fakeFetch,
+    })
+    expect(sawShortName).toBe(false)
   })
 
   it('retries on 503 and succeeds on second attempt', async () => {
@@ -136,7 +167,7 @@ describe('uploadBlobs', () => {
     await uploadBlobs([fakeBlob('a'.repeat(64))], {
       apiUrl: API,
       sessionToken: TOKEN,
-      scope: SCOPE,
+      rootTree: ROOT_TREE,
       fetch: fakeFetch,
     })
     expect(attempts).toBe(2)
@@ -152,7 +183,7 @@ describe('uploadBlobs', () => {
       uploadBlobs([fakeBlob('a'.repeat(64))], {
         apiUrl: API,
         sessionToken: TOKEN,
-        scope: SCOPE,
+        rootTree: ROOT_TREE,
         fetch: fakeFetch,
       }),
     ).rejects.toMatchObject({ code: 'session_expired' })
@@ -165,7 +196,7 @@ describe('uploadBlobs', () => {
       uploadBlobs([fakeBlob('a'.repeat(64))], {
         apiUrl: API,
         sessionToken: TOKEN,
-        scope: SCOPE,
+        rootTree: ROOT_TREE,
         fetch: fakeFetch,
       }),
     ).rejects.toMatchObject({ code: 'too_large' })
@@ -181,7 +212,7 @@ describe('uploadBlobs', () => {
       uploadBlobs([fakeBlob('a'.repeat(64))], {
         apiUrl: API,
         sessionToken: TOKEN,
-        scope: SCOPE,
+        rootTree: ROOT_TREE,
         fetch: fakeFetch,
       }),
     ).rejects.toMatchObject({ code: 'backend_down' })
@@ -190,12 +221,12 @@ describe('uploadBlobs', () => {
 })
 
 describe('finalizePublish', () => {
-  it('sends headCommit + shortName, parses canonical + alias', async () => {
+  it('sends headCommit + shortName (no X-Scope), parses canonical + alias', async () => {
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       expect(String(url)).toBe(`${API}/publish`)
       const headers = new Headers(init?.headers)
       expect(headers.get('Authorization')).toBe(`Bearer ${TOKEN}`)
-      expect(headers.get('X-Scope')).toBe(SCOPE)
+      expect(headers.get('X-Scope')).toBeNull()
       const body = JSON.parse(String(init?.body))
       expect(body.headCommit).toMatch(/^[a-f0-9]{64}$/)
       expect(body.shortName).toBe('myapp')
@@ -206,10 +237,11 @@ describe('finalizePublish', () => {
         alias: 'myapp',
       })
     }) as unknown as typeof fetch
-    const result = await finalizePublish('a'.repeat(64), 'myapp', {
+    const result = await finalizePublish('a'.repeat(64), {
       apiUrl: API,
       sessionToken: TOKEN,
-      scope: SCOPE,
+      rootTree: ROOT_TREE,
+      shortName: 'myapp',
       fetch: fakeFetch,
     })
     expect(result.alias).toBe('myapp')
@@ -227,10 +259,10 @@ describe('finalizePublish', () => {
         alias: null,
       })
     }) as unknown as typeof fetch
-    const result = await finalizePublish('a'.repeat(64), undefined, {
+    const result = await finalizePublish('a'.repeat(64), {
       apiUrl: API,
       sessionToken: TOKEN,
-      scope: SCOPE,
+      rootTree: ROOT_TREE,
       fetch: fakeFetch,
     })
     expect(result.alias).toBeNull()
@@ -239,10 +271,11 @@ describe('finalizePublish', () => {
   it('maps 403 to name_taken with the shortName in the message', async () => {
     const fakeFetch = vi.fn(async () => jsonRes({ error: 'taken' }, 403)) as unknown as typeof fetch
     await expect(
-      finalizePublish('a'.repeat(64), 'taken-name', {
+      finalizePublish('a'.repeat(64), {
         apiUrl: API,
         sessionToken: TOKEN,
-        scope: SCOPE,
+        rootTree: ROOT_TREE,
+        shortName: 'taken-name',
         fetch: fakeFetch,
       }),
     ).rejects.toMatchObject({ code: 'name_taken' })
