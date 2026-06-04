@@ -18,7 +18,11 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { inflateSync } from 'node:zlib'
-import { hashDirectory, buildObjectsFromFiles } from './build-objects.js'
+import {
+  hashDirectory,
+  buildObjectsFromFiles,
+  assembleSourceAndHash,
+} from './build-objects.js'
 
 const HEX_64 = /^[0-9a-f]{64}$/
 
@@ -141,5 +145,23 @@ describe('buildObjectsFromFiles', () => {
       ]),
     )
     expect(fromMap.rootTree).toBe(onDisk.rootTree)
+  })
+})
+
+describe('assembleSourceAndHash', () => {
+  it('hashes selected source (excluding node_modules/dist) into an object graph', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'myth-asm-'))
+    await mkdir(path.join(root, 'src'))
+    await mkdir(path.join(root, 'node_modules'))
+    await mkdir(path.join(root, 'dist'))
+    await writeFile(path.join(root, 'src', 'main.tsx'), 'export default 1')
+    await writeFile(path.join(root, 'package.json'), '{"name":"x"}')
+    await writeFile(path.join(root, 'node_modules', 'x.js'), 'ignored')
+    await writeFile(path.join(root, 'dist', 'b.js'), 'ignored')
+    const res = await assembleSourceAndHash(root)
+    // 2 source files only (node_modules + dist excluded).
+    expect(res.fileCount).toBe(2)
+    expect(res.rootTree).toMatch(HEX_64)
+    expect(res.headCommit).toMatch(HEX_64)
   })
 })

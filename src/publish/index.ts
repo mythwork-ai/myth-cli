@@ -3,7 +3,8 @@
  *
  *   1. Resolve project root by walking up to myth.config.json (same
  *      discipline as `myth run` — see `src/virtual-html.ts:loadConfigOrThrow`).
- *   2. Run `vite build` and emit the git object graph in memory.
+ *   2. Validate + package the app's SOURCE (no local build) and emit the git
+ *      object graph in memory. Compilation happens at the edge at serve time.
  *   3. Run the browser-mediated auth handshake to get a session JWT.
  *   4. POST /publish/check to find which blobs need uploading.
  *   5. PUT each missing blob (concurrency 6, retries on 5xx).
@@ -16,10 +17,13 @@
  * tester's opt-in.
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { loadConfigOrThrow, OrbitConfigError } from '../virtual-html.js'
-import { buildAndHash } from './build-objects.js'
+import { assembleSourceAndHash } from './build-objects.js'
+import { selectSourceFiles } from './source-select.js'
+import { validateSource } from './validate.js'
+import { detectTailwind, prebakeTailwind } from './tailwind.js'
 import { runAuthHandshake } from './auth-handshake.js'
 import {
   checkBlobs,
@@ -28,9 +32,6 @@ import {
   uploadBlobs,
 } from './client.js'
 import { createProgress } from './progress.js'
-
-/** Vite entry candidates — same list as `myth run` (src/run.ts). */
-const DEFAULT_ENTRY_CANDIDATES = ['src/main.tsx', 'src/main.ts', 'src/App.tsx', 'App.tsx']
 
 export interface PublishOptions {
   /** Working directory the command was invoked from. */
@@ -78,22 +79,6 @@ export function resolveBackend(opts: {
   return { apiUrl, authOrigin }
 }
 
-function resolveEntry(root: string, requested: string | undefined): string {
-  if (requested !== undefined) {
-    if (!existsSync(path.join(root, requested))) {
-      throw new OrbitConfigError(`entry not found: ${path.join(root, requested)}`)
-    }
-    return requested
-  }
-  for (const candidate of DEFAULT_ENTRY_CANDIDATES) {
-    if (existsSync(path.join(root, candidate))) return candidate
-  }
-  throw new OrbitConfigError(
-    `no entry file found in ${root}. Tried: ${DEFAULT_ENTRY_CANDIDATES.join(', ')}. ` +
-      `Pass --entry <file> to override.`,
-  )
-}
-
 /**
  * Public entry point — wired into `bin/myth.ts` as the `publish` case.
  * Throws on hard failures (config missing, build fails, upload aborts);
@@ -103,7 +88,6 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   const loaded = loadConfigOrThrow(opts.cwd)
   const root = loaded.root
   const config = loaded.config
-  const entry = resolveEntry(root, opts.entry)
   // shortName precedence: --name flag > config.defaultPublishName.
   const shortName =
     opts.shortName ??
@@ -115,13 +99,30 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   console.log(`[myth] Project: ${config.name} (${config.projectId})`)
   console.log(`[myth] Backend: ${apiUrl}`)
 
-  // 1. Build + hash.
+  // 1. Validate + assemble source (no local build — the edge compiles).
+  const pkgPath = path.join(root, 'package.json')
+  const deps: Record<string, string> = existsSync(pkgPath)
+    ? (JSON.parse(readFileSync(pkgPath, 'utf-8')).dependencies ?? {})
+    : {}
+  const files = selectSourceFiles(root)
+  const errors = validateSource({ files, deps })
+  if (errors.length > 0) {
+    throw new OrbitConfigError('Cannot publish — fix these first:\n  - ' + errors.join('\n  - '))
+  }
+  if (detectTailwind(deps)) {
+    console.log('[myth] Tailwind detected — pre-baking CSS...')
+    // Entry CSS heuristic: the project stylesheet that imports tailwind.
+    // Default to src/index.css; fall back to the first *.css in the upload set.
+    const entryCss =
+      files.find(f => f === 'src/index.css') ?? files.find(f => f.endsWith('.css')) ?? 'src/index.css'
+    prebakeTailwind(root, entryCss)
+  }
   const buildStart = Date.now()
-  console.log('[myth] Building app (vite build)...')
-  const built = await buildAndHash(root, entry)
+  console.log('[myth] Packaging source...')
+  const built = await assembleSourceAndHash(root)
   const buildSec = ((Date.now() - buildStart) / 1000).toFixed(1)
   console.log(
-    `[myth] Built in ${buildSec}s. ${built.fileCount} files, ` +
+    `[myth] Packaged in ${buildSec}s. ${built.fileCount} files, ` +
       `${formatBytes(built.totalBytes)}.`,
   )
 
@@ -177,7 +178,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     rootTree: built.rootTree,
     shortName,
   })
-  console.log('[myth] ✓ Published.')
+  console.log('[myth] ✓ Published. (Live for you now; public once the safety scan passes.)')
   const zoneSuffix = inferZoneSuffix(apiUrl)
   console.log(`[myth]   Canonical: https://${result.canonical}.${zoneSuffix}`)
   if (result.alias) {

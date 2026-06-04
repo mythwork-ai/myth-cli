@@ -28,6 +28,7 @@ import { readFile, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { build as viteBuild } from 'vite'
 import react from '@vitejs/plugin-react'
+import { selectSourceFiles } from './source-select.js'
 
 const TEXT_ENC = new TextEncoder()
 
@@ -169,6 +170,21 @@ export async function hashDirectory(distDir: string): Promise<BuildResult> {
     fileCount,
     totalBytes,
   }
+}
+
+/**
+ * Select the project's source files (heuristic + .gitignore excludes) and hash
+ * them into the git object graph. Replaces buildAndHash (vite) for the
+ * source-publish model — the CLI uploads source; the edge compiles.
+ */
+export async function assembleSourceAndHash(root: string): Promise<BuildResult> {
+  const rels = selectSourceFiles(root)
+  const files = new Map<string, Uint8Array>()
+  for (const rel of rels) {
+    const bytes = new Uint8Array(await readFile(path.join(root, rel)))
+    files.set(rel, bytes)
+  }
+  return buildObjectsFromFiles(files)
 }
 
 /**
