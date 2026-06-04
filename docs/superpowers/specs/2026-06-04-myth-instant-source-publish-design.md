@@ -26,6 +26,12 @@ React app go live instantly via source upload**. Everything else is a later spec
 - `myth publish` today runs `vite build` locally and uploads the compiled `dist/` as
   git-format objects (blobs/trees/commit, SHA-256 content-addressed) to the publish worker
   (`api.myth.work`). See `src/publish/build-objects.ts:86` (`buildAndHash` → `viteBuild`).
+  **Migration:** we drop the local `vite build` + `dist/` walk entirely and instead assemble the
+  app's **source** tree (per §5.1) and hash *that* into the same git objects — repointing the
+  existing object-graph machinery (`hashDirectory`) at source instead of build output. The
+  client/upload/finalize half is unchanged; compilation simply moves from the CLI (build time)
+  to the edge (serve time). This is the core simplification: the CLI stops being a builder and
+  becomes a source packager.
 - The **serve worker already compiles source at the edge**: `orbitcode/workers/serve/src/inner.ts:139`
   (`serveInner`) does cache-lookup (CF cache, keyed by tree hash) → on miss walks the tree to
   `Map<path, source>` → `compile({ files, target: 'react' })` (Sucrase) → caches compiled HTML.
