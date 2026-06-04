@@ -44,8 +44,6 @@ export interface PublishOptions {
   apiUrl?: string
   /** Override the auth origin (escape hatch / for local dev). */
   authOrigin?: string
-  /** Override the auto-detected entry. */
-  entry?: string
 }
 
 const PROD_API_URL = 'https://api.myth.work'

@@ -151,7 +151,6 @@ async function publish(pubArgs: string[]) {
   const shortName = parseStringFlag(pubArgs, "--name");
   const apiUrl = parseStringFlag(pubArgs, "--api");
   const staging = pubArgs.includes("--staging");
-  const explicitEntry = parseEntry(pubArgs);
   const { publishCommand } = await import("../src/publish/index.js");
   const { PublishError } = await import("../src/publish/client.js");
   const { HandshakeTimeoutError } = await import("../src/publish/auth-handshake.js");
@@ -161,7 +160,6 @@ async function publish(pubArgs: string[]) {
       shortName,
       staging,
       apiUrl,
-      entry: explicitEntry,
     });
   } catch (err) {
     if (err instanceof PublishError) {
