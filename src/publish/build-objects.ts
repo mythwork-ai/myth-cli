@@ -1,6 +1,14 @@
 /**
- * Build the in-memory git-format object graph that the publish worker
- * stores. Walks a built `dist/` directory and emits:
+ * Build the in-memory git-format object graph that the publish worker stores.
+ *
+ * Three entry points:
+ *   - `assembleSourceAndHash(root)` — the publish path: selects the app's
+ *     SOURCE (heuristic + .gitignore excludes) and hashes it.
+ *   - `buildObjectsFromFiles(map)` — pure path->bytes hashing (no disk).
+ *   - `hashDirectory(dir)` — walks an on-disk directory tree (used as a
+ *     reference/fixture helper in tests).
+ *
+ * All three emit:
  *
  *   - One blob object per file (raw file bytes framed as `blob <size>\0<bytes>`)
  *   - One tree object per directory (entries sorted git-style, framed as
@@ -141,9 +149,15 @@ export async function hashDirectory(distDir: string): Promise<BuildResult> {
  * Select the project's source files (heuristic + .gitignore excludes) and hash
  * them into the git object graph. Replaces buildAndHash (vite) for the
  * source-publish model — the CLI uploads source; the edge compiles.
+ *
+ * `preselected` lets the caller pass an already-computed file list (from
+ * `selectSourceFiles`) to avoid a second filesystem walk.
  */
-export async function assembleSourceAndHash(root: string): Promise<BuildResult> {
-  const rels = selectSourceFiles(root)
+export async function assembleSourceAndHash(
+  root: string,
+  preselected?: string[],
+): Promise<BuildResult> {
+  const rels = preselected ?? selectSourceFiles(root)
   const files = new Map<string, Uint8Array>()
   for (const rel of rels) {
     const bytes = new Uint8Array(await readFile(path.join(root, rel)))
@@ -154,8 +168,11 @@ export async function assembleSourceAndHash(root: string): Promise<BuildResult> 
 
 /**
  * Build the git object graph from an in-memory map of POSIX relative path ->
- * file bytes. Pure (no disk). Mirrors hashDirectory's framing/sorting so the
- * resulting hashes are identical to an on-disk walk of the same tree.
+ * file bytes. Pure (no disk). Mirrors hashDirectory's framing/sorting, so for
+ * non-executable files the resulting hashes are identical to an on-disk walk
+ * of the same tree. (Unlike hashDirectory it has no file-mode information, so
+ * every blob is recorded as mode 100644; executable bits are not preserved.
+ * This is fine for the source-publish path — app source is not executable.)
  */
 export async function buildObjectsFromFiles(
   files: Map<string, Uint8Array>,

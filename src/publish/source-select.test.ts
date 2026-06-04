@@ -54,6 +54,40 @@ describe('selectSourceFiles', () => {
     expect(files.some(f => f.startsWith('coverage/'))).toBe(false)
   })
 
+  it('excludes glob-matched secrets (the security boundary)', () => {
+    // Common secret patterns that a naive matcher would miss.
+    writeFileSync(path.join(root, '.gitignore'), '*.pem\n.env*\n**/secret.txt\n')
+    writeFileSync(path.join(root, 'server.pem'), 'KEY')
+    writeFileSync(path.join(root, '.env.production'), 'SECRET=1')
+    mkdirSync(path.join(root, 'src', 'deep'), { recursive: true })
+    writeFileSync(path.join(root, 'src', 'deep', 'secret.txt'), 'SECRET')
+    const files = selectSourceFiles(root)
+    expect(files).not.toContain('server.pem')
+    expect(files).not.toContain('.env.production')
+    expect(files).not.toContain('src/deep/secret.txt')
+    // Non-matching source still included.
+    expect(files).toContain('src/main.tsx')
+  })
+
+  it('honors leading-slash anchoring (root-only)', () => {
+    writeFileSync(path.join(root, '.gitignore'), '/build\n')
+    mkdirSync(path.join(root, 'build'), { recursive: true })
+    writeFileSync(path.join(root, 'build', 'root.js'), 'x')
+    mkdirSync(path.join(root, 'src', 'build'), { recursive: true })
+    writeFileSync(path.join(root, 'src', 'build', 'nested.js'), 'x')
+    const files = selectSourceFiles(root)
+    expect(files.some(f => f.startsWith('build/'))).toBe(false) // root build excluded
+    expect(files).toContain('src/build/nested.js') // nested build kept
+  })
+
+  it('works with no .gitignore (heuristic excludes only)', () => {
+    rmSync(path.join(root, '.gitignore'), { force: true })
+    const files = selectSourceFiles(root)
+    expect(files).toContain('src/main.tsx')
+    expect(files.some(f => f.startsWith('node_modules/'))).toBe(false)
+    expect(files).toContain('.env') // no gitignore → heuristic doesn't drop .env
+  })
+
   it('returns POSIX-style relative paths, sorted, deterministic', () => {
     expect(selectSourceFiles(root)).toEqual([...selectSourceFiles(root)].sort())
   })

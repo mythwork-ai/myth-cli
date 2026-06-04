@@ -17,7 +17,7 @@
  * tester's opt-in.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { loadConfigOrThrow, OrbitConfigError } from '../virtual-html.js'
 import { assembleSourceAndHash } from './build-objects.js'
@@ -99,25 +99,37 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
 
   // 1. Validate + assemble source (no local build — the edge compiles).
   const pkgPath = path.join(root, 'package.json')
-  const deps: Record<string, string> = existsSync(pkgPath)
-    ? (JSON.parse(readFileSync(pkgPath, 'utf-8')).dependencies ?? {})
+  const pkg = existsSync(pkgPath)
+    ? (JSON.parse(readFileSync(pkgPath, 'utf-8')) as {
+        dependencies?: Record<string, string>
+        devDependencies?: Record<string, string>
+      })
     : {}
+  // Runtime deps drive validation + the edge importmap.
+  const deps: Record<string, string> = pkg.dependencies ?? {}
+  // Tailwind is usually a devDependency (e.g. @tailwindcss/vite), so detection
+  // must look at both dependency sets.
+  const allDeps: Record<string, string> = { ...(pkg.devDependencies ?? {}), ...deps }
   const files = selectSourceFiles(root)
   const errors = validateSource({ files, deps })
   if (errors.length > 0) {
     throw new OrbitConfigError('Cannot publish — fix these first:\n  - ' + errors.join('\n  - '))
   }
-  if (detectTailwind(deps)) {
+  if (detectTailwind(allDeps)) {
     console.log('[myth] Tailwind detected — pre-baking CSS...')
     // Entry CSS heuristic: the project stylesheet that imports tailwind.
-    // Default to src/index.css; fall back to the first *.css in the upload set.
+    // Prefer src/index.css, then any src/*.css, then any *.css.
     const entryCss =
-      files.find(f => f === 'src/index.css') ?? files.find(f => f.endsWith('.css')) ?? 'src/index.css'
+      files.find(f => f === 'src/index.css') ??
+      files.find(f => f.startsWith('src/') && f.endsWith('.css')) ??
+      files.find(f => f.endsWith('.css')) ??
+      'src/index.css'
     prebakeTailwind(root, entryCss)
   }
   const buildStart = Date.now()
   console.log('[myth] Packaging source...')
-  const built = await assembleSourceAndHash(root)
+  // Reuse the already-computed file list (avoid a second filesystem walk).
+  const built = await assembleSourceAndHash(root, files)
   const buildSec = ((Date.now() - buildStart) / 1000).toFixed(1)
   console.log(
     `[myth] Packaged in ${buildSec}s. ${built.fileCount} files, ` +

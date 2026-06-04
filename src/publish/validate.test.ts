@@ -42,6 +42,16 @@ describe('validateSource', () => {
     expect(errs.some(e => /sharp/.test(e))).toBe(true)
   })
 
+  it('reports multiple problems at once', () => {
+    const errs = validateSource({
+      files: ['tailwind.config.js', 'src/main.tsx'],
+      deps: { sharp: '0.33.0' },
+    })
+    expect(errs.length).toBe(2)
+    expect(errs.some(e => /tailwind\.config\.js/i.test(e))).toBe(true)
+    expect(errs.some(e => /sharp/.test(e))).toBe(true)
+  })
+
   it('passes a clean standard app', () => {
     const errs = validateSource({
       files: ['src/main.tsx', 'package.json'],
