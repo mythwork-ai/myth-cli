@@ -73,7 +73,7 @@ Two **permanent** tiers. An app is born on Tier 1 and only moves to Tier 2 if tr
 | Engine | WASM transformer in the serve/compile worker | Native esbuild in a Cloudflare Container |
 | Deps | esm.sh importmap generated from `package.json` | bundled into the artifact (no runtime CDN) |
 | Output | user modules concatenated to one file; deps loaded at runtime | one/few self-contained files |
-| When | every app, immediately | apps over a traffic threshold (e.g. >1000 hits/day) |
+| When | every app, immediately | apps over a traffic threshold (start ~40 distinct hits/day) |
 | Cost | ~free (worker CPU) | container build, amortized over high traffic |
 
 **Why this is the right cost model:** the long tail of low-traffic apps never pays for
@@ -106,12 +106,19 @@ No local build, no synchronous scan, no bundle.
    against the compiler's fallbacks (`main.tsx` / `index.tsx` / `App.tsx` / `src/*`).
 2. **Select source files** to upload: `src/**`, entry, project CSS, `public/` assets,
    `package.json` (+ lockfile). **Exclude** `node_modules`, `dist`, `.git`, and build configs
-   not needed at the edge.
-3. **Resolve dependencies** into a normalized manifest: read `package.json` + lockfile, pin
-   **exact installed versions** (lockfile is the source of truth), emit a manifest the edge
-   uses to build the importmap deterministically. (Mechanism detail in §6.)
+   not needed at the edge — **and additionally exclude anything matched by the project's
+   `.gitignore`** (respect the user's own ignore rules; heuristics are a floor, not a
+   replacement). This keeps secrets/build output/local artifacts the user already ignores from
+   ever being uploaded.
+3. **Resolve dependencies** straight from the **standard `package.json` + lockfile** — no
+   bespoke manifest format. Exact versions come from the lockfile (source of truth). The
+   uploaded tree carries `package.json` (+ lockfile) as-is and the edge derives the importmap
+   from them. (Rationale + mechanism in §6.)
 4. **Pre-bake Tailwind** if present: run Tailwind locally → emit a plain `.css` file, rewrite
-   the import to it. (The edge inlines plain CSS but cannot run Tailwind's JIT.)
+   the import to it. (The edge inlines plain CSS but does not run Tailwind's JIT.) This is the
+   **v1 approach** and it ships as-is. **Known long-run gap:** source edited *server-side*
+   (agent/in-browser, no CLI step) won't get this pre-bake — see §7.4 for the server-side
+   Tailwind plan.
 5. **Pre-flight validation** — fail *before upload* with precise, actionable messages for:
    unresolvable entry, dependencies esm.sh cannot serve, anything the edge would `422` on.
    Document the supported subset in the README.
@@ -122,25 +129,35 @@ No local build, no synchronous scan, no bundle.
 
 ### 5.2 Edge responsibilities (`orbitcode`)
 
-1. **`package.json`-driven importmap (Tier 1).** The compiler reads the uploaded dependency
-   manifest (or `package.json` + lockfile) and **generates esm.sh importmap entries** for
-   declared deps at pinned versions, instead of rejecting non-blessed bare specifiers. React-
-   family / `@orbitcode/*` / blessed handling is unchanged; user-module concatenation and CSS
-   inlining are unchanged.
+1. **`package.json`-driven importmap (Tier 1).** The compiler reads the uploaded
+   **`package.json` + lockfile** and **generates esm.sh importmap entries** for declared deps at
+   pinned versions, instead of rejecting non-blessed bare specifiers. React-family /
+   `@orbitcode/*` / blessed handling is unchanged; user-module concatenation and CSS inlining
+   are unchanged.
 2. **Async scan.** On publish, write a `pending` scan record. The serve worker's access rules:
    - `pending` → serve **only to the authenticated publishing user** (author preview); others get a "review in progress" response (not 404, to avoid implying failure).
    - `pass` → serve publicly (current behavior).
    - `fail` → `451` (current behavior).
-3. **Author identity for pre-scan serving.** The serve worker must distinguish the author from
-   the public during the `pending` window. Mechanism options (decide in plan): a signed
-   **preview token** returned to the CLI at publish and presented by the author's browser, or
-   gating the public **alias** while allowing the **canonical** URL with an author-scoped token.
-   Requirement: no unauthenticated user can view `pending` content.
+3. **Author identity for pre-scan serving — must be the mythwork login credential.** During the
+   `pending` window the serve worker authenticates the viewer against their **mythwork login
+   session** and serves only if that identity matches the publisher. **No bearer/preview
+   token.** Rationale (hard requirement): a transferable preview token can be appended to a URL
+   and handed to a victim, forcing the platform to serve *unscanned* content to an unsuspecting
+   user — a potent phishing vector (an unscanned app at a trusted `*.myth.work` origin). Tying
+   pre-scan visibility to the author's own authenticated login makes the token non-transferable:
+   a victim following the link is not logged in as the author, so they get the "review in
+   progress" response, never the unscanned app. Requirement: **only the authenticated publishing
+   user can view `pending` content; no token, cookie, or URL parameter may substitute.**
 
 ---
 
 ## 6. Dependency resolution detail (Tier 1)
 
+- **Standard files, no bespoke manifest.** We use the app's **`package.json` + lockfile**
+  verbatim — we do *not* invent a `myth.deps.json`. Standards mean existing tooling keeps
+  working and existing codebases push up **unchanged** (no myth-specific file to add). The
+  lockfile already gives us exact, deterministic versions, so a normalized manifest would buy
+  nothing over the standard files.
 - The importmap maps **top-level bare specifiers** to pinned esm.sh URLs
   (`https://esm.sh/<pkg>@<exact-version><subpath>`). esm.sh resolves each package's **own
   sub-dependencies** internally (its returned modules import back into esm.sh with `?deps`
@@ -175,8 +192,12 @@ No local build, no synchronous scan, no bundle.
   native "snapshots" are forthcoming). No EFS-style shared volume exists; R2-via-FUSE is the
   closest durable shared store.
 - **Promotion trigger:** per-tree/alias traffic counter (from serve analytics) crossing a
-  threshold (e.g. >1000 hits/day) enqueues a bundle job; once the artifact exists, the serve
-  worker prefers it over the Tier-1 output.
+  threshold enqueues a bundle job; once the artifact exists, the serve worker prefers it over
+  the Tier-1 output. **Start the threshold low — ~40 hits in the trailing day** — because the
+  per-build cost is small at low scale, so promoting early is cheap and improves more apps
+  sooner. Over time, harden the counter against gaming: count **distinct IPs** (not raw hits),
+  and weight toward **confirmed non-cloud / non-botnet** IPs (exclude datacenter/VPN ranges and
+  known bot networks) so an attacker can't cheaply inflate an app into the expensive tier.
 
 ### 7.2 Forward-compatibility constraints on Tier 1
 - Serve worker **selects tier per tree**; **cache keys include the tier** (and compiler version).
@@ -184,7 +205,30 @@ No local build, no synchronous scan, no bundle.
   needs the same `package.json`/lockfile Tier 1 uses).
 - Nothing in Tier 1 assumes "deps are always runtime importmap" beyond the Tier-1 code path.
 
-### 7.3 Other future slices
+### 7.4 Server-side Tailwind (long-run — CLI pre-bake is v1)
+We advise apps not to use Tailwind, but expect it anyway (users/agents adding it, especially to
+source edited server-side with no CLI pre-bake step). Research bottom line on baking Tailwind
+server-side **before the transform**:
+- **Tier 2 (container): trivial.** Native Tailwind v4 runs in a Node container; a small-app
+  build is ~100ms (incremental ~5ms). No real obstacle.
+- **Tier 1 (Worker): feasible, with one spike.** Tailwind v4's **CSS-generation engine is pure
+  TypeScript** (`compile(css).build(candidates)`), ~273 KB of JS, **no Oxide/WASM and no DOM** —
+  well under the 10 MB Worker limit. We already tokenize the source during the TSX→JS pass, so
+  we can extract class **candidates** ourselves and feed `build()` directly (the model the
+  official `@tailwindcss/browser` build uses). The **only** snag is Lightning CSS (final
+  prefixing/optimization), whose WASM would need to be a **pre-compiled Worker WASM binding**
+  (Workers forbid runtime WASM compilation) — or skipped for Tier 1 (ship raw `build()` output,
+  zero WASM). Do **not** plan around `@tailwindcss/oxide-wasm32-wasi` (needs WASI+threads, not
+  available in Workers).
+- **Security — no user-code execution.** Tailwind treats source as **plain text** for class
+  detection; generation runs none of the user's JS. The only exec vectors are legacy
+  `tailwind.config.js` / JS plugins — **reject those; require CSS-first config** (`@import
+  "tailwindcss"`, `@theme`, `@source`). Caveat to document: dynamically-built class names
+  (`` `bg-${c}-600` ``) won't be detected without static strings or `@source inline(...)`.
+- **Caveat:** the programmatic `compile()`/`build()` API is currently internal/undocumented —
+  pin the Tailwind version and re-verify on upgrade.
+
+### 7.5 Other future slices
 - Lifecycle commands (`ls` / `open` / `delete`, persistent login).
 - Sessions (new/pause/resume/fork/delete) — gated on a state backend.
 
@@ -192,8 +236,8 @@ No local build, no synchronous scan, no bundle.
 
 ## 8. Testing
 
-- **vitest units (CLI):** dependency classification, lockfile version pinning, manifest
-  emission, source-file selection (include/exclude rules), Tailwind pre-bake, pre-flight
+- **vitest units (CLI):** dependency classification, lockfile version pinning, source-file
+  selection (heuristic **and** `.gitignore` exclude rules), Tailwind pre-bake, pre-flight
   validation errors.
 - **Edge units:** `package.json` → importmap generation (pinned versions, subpaths,
   blessed/react passthrough); scan-state access rules (pending→author-only, pass→public,
@@ -208,13 +252,16 @@ No local build, no synchronous scan, no bundle.
 
 1. **How are current `dist/` publishes actually served** vs. the source-compile path? Confirm
    before cutting `myth publish` over to source upload, so nothing depends on the old shape.
-2. **Author-identity mechanism** for pre-scan serving (preview token vs. canonical-with-token).
-3. **Manifest format**: reuse `package.json` + lockfile as-is at the edge, or emit a normalized
-   `myth.deps.json`? (Leaning normalized for deterministic edge behavior.)
-4. **esm.sh bundling params** (`?bundle`, `?deps`, standalone builds) — can they cut the Tier-1
+2. **Mythwork-login enforcement at the serve edge:** confirm the serve worker can authenticate
+   the viewer's mythwork login session (not just the host-frame token) so pre-scan serving can
+   be gated on author identity (§5.2.3). If it can't today, that capability is part of this slice.
+3. **esm.sh bundling params** (`?bundle`, `?deps`, standalone builds) — can they cut the Tier-1
    runtime request count without changing the model? Worth a small evaluation during the plan.
-5. **Traffic counter location/threshold** for Tier 2 promotion (later spec, but note the data
-   the serve worker must emit now so it's available when Tier 2 lands).
+4. **Traffic-counter data the serve worker must emit now** (distinct IPs, IP classification
+   inputs) so the Tier 2 promotion signal is available when Tier 2 lands.
+
+*Resolved (no longer open):* dependency manifest = standard `package.json` + lockfile (§6);
+author-identity mechanism = mythwork login credential only, no preview token (§5.2.3).
 
 ---
 
@@ -222,10 +269,18 @@ No local build, no synchronous scan, no bundle.
 
 - Compilation model: **upload source, compile at edge, cache compiled output** (matches the
   serve worker's existing design). Skip "compiler modernization" as a separate effort.
-- Dependency approach: **`package.json`-driven importmap, no source rewriting** (Tier 1).
+- Dependency approach: **`package.json`-driven importmap, no source rewriting** (Tier 1), using
+  **standard `package.json` + lockfile** (no bespoke manifest — standards keep existing tooling
+  and codebases working unchanged).
+- Source selection: heuristic excludes **plus the project's `.gitignore`**.
 - `myth publish`: **replaced** by source-upload (no dual mode).
-- CSS: **supported** (relative inline + CLI Tailwind pre-bake) — not unsupported, not blocking.
-- Tiering: **Tier 1 default for all apps; Tier 2 container bundle promoted by traffic.**
+- CSS: **supported** (relative inline + CLI Tailwind pre-bake) — the stale "No CSS" header in
+  `react-target.ts` is corrected. Server-side Tailwind is a documented long-run track (§7.4),
+  not a v1 blocker.
+- Tiering: **Tier 1 default for all apps; Tier 2 container bundle promoted by traffic** (start
+  ~40 distinct hits/day; harden against gaming with distinct/non-cloud IP counting).
 - Scan: **async**, with **author-only preview** until pass — yielding `put commit → transform → live`.
+- Pre-scan auth: **mythwork login credential only — no transferable preview token** (prevents
+  forcing unscanned content onto victims; anti-phishing).
 - Tier 2 engine: **native esbuild in a Cloudflare Container** (WASM bundling is not viable in a
   Worker isolate per research; transformers can't produce a single no-CDN file).
