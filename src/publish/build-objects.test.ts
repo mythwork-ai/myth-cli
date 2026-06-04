@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { inflateSync } from 'node:zlib'
-import { hashDirectory } from './build-objects.js'
+import { hashDirectory, buildObjectsFromFiles } from './build-objects.js'
 
 const HEX_64 = /^[0-9a-f]{64}$/
 
@@ -99,5 +99,47 @@ describe('hashDirectory', () => {
     expect(result.objects.size).toBe(2)
     expect(result.rootTree).toMatch(HEX_64)
     expect(result.headCommit).toMatch(HEX_64)
+  })
+})
+
+describe('buildObjectsFromFiles', () => {
+  it('hashes a path->bytes map into a deterministic object graph', async () => {
+    const enc = new TextEncoder()
+    const files = new Map<string, Uint8Array>([
+      ['src/main.tsx', enc.encode('export default 1')],
+      ['package.json', enc.encode('{"name":"x"}')],
+    ])
+    const a = await buildObjectsFromFiles(files)
+    const b = await buildObjectsFromFiles(files)
+    expect(a.rootTree).toBe(b.rootTree)
+    expect(a.headCommit).toBe(b.headCommit)
+    expect(a.fileCount).toBe(2)
+    // commit + root tree + src tree + 2 blobs == 5 objects
+    expect(a.objects.size).toBe(5)
+  })
+
+  it('produces a 64-hex root tree for a single root-level file', async () => {
+    const enc = new TextEncoder()
+    const files = new Map([['a.txt', enc.encode('hello')]])
+    const fromMap = await buildObjectsFromFiles(files)
+    expect(fromMap.rootTree).toMatch(HEX_64)
+  })
+
+  it('matches hashDirectory for the same on-disk tree', async () => {
+    // Build the same two-file tree on disk and via the map; root trees match.
+    const root = await mkdtemp(path.join(tmpdir(), 'myth-publish-map-'))
+    await mkdir(path.join(root, 'src'))
+    await writeFile(path.join(root, 'src', 'main.tsx'), 'export default 1')
+    await writeFile(path.join(root, 'package.json'), '{"name":"x"}')
+    const onDisk = await hashDirectory(root)
+
+    const enc = new TextEncoder()
+    const fromMap = await buildObjectsFromFiles(
+      new Map<string, Uint8Array>([
+        ['src/main.tsx', enc.encode('export default 1')],
+        ['package.json', enc.encode('{"name":"x"}')],
+      ]),
+    )
+    expect(fromMap.rootTree).toBe(onDisk.rootTree)
   })
 })

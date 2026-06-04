@@ -171,6 +171,69 @@ export async function hashDirectory(distDir: string): Promise<BuildResult> {
   }
 }
 
+/**
+ * Build the git object graph from an in-memory map of POSIX relative path ->
+ * file bytes. Pure (no disk). Mirrors hashDirectory's framing/sorting so the
+ * resulting hashes are identical to an on-disk walk of the same tree.
+ */
+export async function buildObjectsFromFiles(
+  files: Map<string, Uint8Array>,
+): Promise<BuildResult> {
+  const objects = new Map<string, BuiltObject>()
+  let fileCount = 0
+  let totalBytes = 0
+
+  interface Dir {
+    dirs: Map<string, Dir>
+    files: Map<string, Uint8Array>
+  }
+  const rootDir: Dir = { dirs: new Map(), files: new Map() }
+  for (const [rel, bytes] of files) {
+    const parts = rel.split('/')
+    let cur = rootDir
+    for (let i = 0; i < parts.length - 1; i++) {
+      const seg = parts[i]!
+      let next = cur.dirs.get(seg)
+      if (!next) {
+        next = { dirs: new Map(), files: new Map() }
+        cur.dirs.set(seg, next)
+      }
+      cur = next
+    }
+    cur.files.set(parts[parts.length - 1]!, bytes)
+  }
+
+  async function visit(dir: Dir): Promise<string> {
+    const entries: TreeEntry[] = []
+    for (const [name, bytes] of dir.files) {
+      const blob = await buildBlob(bytes)
+      if (!objects.has(blob.hash)) {
+        objects.set(blob.hash, blob)
+        totalBytes += blob.deflated.length
+      }
+      fileCount++
+      entries.push({ mode: '100644', name, hash: blob.hash })
+    }
+    for (const [name, sub] of dir.dirs) {
+      const treeHash = await visit(sub)
+      entries.push({ mode: '40000', name, hash: treeHash })
+    }
+    const tree = await buildTree(entries)
+    if (!objects.has(tree.hash)) {
+      objects.set(tree.hash, tree)
+      totalBytes += tree.deflated.length
+    }
+    return tree.hash
+  }
+
+  const rootTree = await visit(rootDir)
+  const commit = await buildCommit({ tree: rootTree })
+  objects.set(commit.hash, commit)
+  totalBytes += commit.deflated.length
+
+  return { objects, headCommit: commit.hash, rootTree, fileCount, totalBytes }
+}
+
 // ===========================================================================
 // Object builders — mirror shared/git/build.ts, but Node-native (no Web
 // Crypto, no CompressionStream).
