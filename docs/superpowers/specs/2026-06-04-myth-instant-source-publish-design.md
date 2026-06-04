@@ -215,11 +215,12 @@ server-side **before the transform**:
   TypeScript** (`compile(css).build(candidates)`), ~273 KB of JS, **no Oxide/WASM and no DOM** —
   well under the 10 MB Worker limit. We already tokenize the source during the TSX→JS pass, so
   we can extract class **candidates** ourselves and feed `build()` directly (the model the
-  official `@tailwindcss/browser` build uses). The **only** snag is Lightning CSS (final
-  prefixing/optimization), whose WASM would need to be a **pre-compiled Worker WASM binding**
-  (Workers forbid runtime WASM compilation) — or skipped for Tier 1 (ship raw `build()` output,
-  zero WASM). Do **not** plan around `@tailwindcss/oxide-wasm32-wasi` (needs WASI+threads, not
-  available in Workers).
+  official `@tailwindcss/browser` build uses). **Decision: skip Lightning CSS for Tier 1** —
+  ship the raw `build()` output (zero WASM, simplest Worker fit). Lightning CSS only does final
+  prefixing/optimization; if output quality turns out to be insufficient, revisit by adding it
+  as a **pre-compiled Worker WASM binding** (Workers forbid runtime WASM compilation). Do
+  **not** plan around `@tailwindcss/oxide-wasm32-wasi` (needs WASI+threads, not available in
+  Workers).
 - **Security — no user-code execution.** Tailwind treats source as **plain text** for class
   detection; generation runs none of the user's JS. The only exec vectors are legacy
   `tailwind.config.js` / JS plugins — **reject those; require CSS-first config** (`@import
