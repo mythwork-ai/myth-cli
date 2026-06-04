@@ -1,7 +1,7 @@
 /**
- * Unit tests for the git-object builder. Drives `hashDirectory` (the
- * Vite-less subset of `buildAndHash`) against a tmpdir fixture and
- * asserts:
+ * Unit tests for the git-object builder. Drives `hashDirectory`,
+ * `buildObjectsFromFiles`, and `assembleSourceAndHash` against tmpdir
+ * fixtures and asserts:
  *
  *   - Every emitted hash is 64-hex lowercase.
  *   - The same input produces deterministic output across runs.

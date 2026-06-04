@@ -26,8 +26,6 @@ import { createHash } from 'node:crypto'
 import { deflateSync } from 'node:zlib'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { build as viteBuild } from 'vite'
-import react from '@vitejs/plugin-react'
 import { selectSourceFiles } from './source-select.js'
 
 const TEXT_ENC = new TextEncoder()
@@ -74,43 +72,10 @@ interface TreeEntry {
 // ===========================================================================
 
 /**
- * Run `vite build` against `projectRoot`, then walk the produced `dist/`
- * and emit the full git object graph. Returns the in-memory object map
- * plus the commit and root-tree hashes the worker needs to finalize.
- *
- * Vite plugin set mirrors `myth run` (the myth plugin + react), so
- * apps that work under `myth run` will build under `myth publish`
- * without surprises. We intentionally do NOT inject the host-frame
- * wrapper (that's a dev-loop convenience, not a production deploy
- * artifact — see spec "What gets bundled").
- */
-export async function buildAndHash(
-  projectRoot: string,
-  entry: string,
-): Promise<BuildResult> {
-  const distDir = path.join(projectRoot, 'dist')
-
-  await viteBuild({
-    root: projectRoot,
-    configFile: false,
-    logLevel: 'warn',
-    build: {
-      outDir: distDir,
-      emptyOutDir: true,
-      rollupOptions: {
-        input: path.join(projectRoot, entry),
-      },
-    },
-    plugins: [react()],
-  })
-
-  return await hashDirectory(distDir)
-}
-
-/**
  * Walk a built directory and emit the git-object graph. Pure function of
- * the on-disk tree; no Vite involvement. Useful for tests that want to
- * skip the build step with a fixture directory.
+ * the on-disk tree; no Vite involvement. Retained as a reference/fixture
+ * helper and exercised by the unit tests; the publish path now uses
+ * `assembleSourceAndHash`.
  */
 export async function hashDirectory(distDir: string): Promise<BuildResult> {
   const objects = new Map<string, BuiltObject>()
