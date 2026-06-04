@@ -21,7 +21,7 @@ const CREATE_HINT =
   'Create one with: {"projectId":"<17-char pid>","name":"<app name>"}.';
 
 /**
- * Walk up from `start` looking for myth.config.json. Returns the
+ * Walk up from `start` looking for orbitcode.config.json. Returns the
  * directory containing it. This is how `myth run` finds the project
  * root regardless of which subdirectory the user invoked from — same
  * pattern as `npm`/`git`/`cargo` walking up to find package.json /
@@ -30,7 +30,7 @@ const CREATE_HINT =
 function findConfigRoot(start: string): string | null {
   let dir = path.resolve(start);
   while (true) {
-    if (existsSync(path.join(dir, "myth.config.json"))) return dir;
+    if (existsSync(path.join(dir, "orbitcode.config.json"))) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -39,12 +39,12 @@ function findConfigRoot(start: string): string | null {
 
 export interface LoadedConfig {
   config: OrbitConfig & { projectId: string; name: string };
-  /** Directory containing the discovered myth.config.json. */
+  /** Directory containing the discovered orbitcode.config.json. */
   root: string;
 }
 
 /**
- * Load myth.config.json by walking up from `start`. Errors out if
+ * Load orbitcode.config.json by walking up from `start`. Errors out if
  * the file isn't found anywhere up the tree or `projectId` is absent
  * — myth run only works against a provisioned project (or a stable
  * dev pid the user pasted).
@@ -53,21 +53,21 @@ export function loadConfigOrThrow(start: string): LoadedConfig {
   const root = findConfigRoot(start);
   if (root === null) {
     throw new OrbitConfigError(
-      `myth.config.json not found in ${start} or any parent directory. ${CREATE_HINT}`,
+      `orbitcode.config.json not found in ${start} or any parent directory. ${CREATE_HINT}`,
     );
   }
-  const configPath = path.join(root, "myth.config.json");
+  const configPath = path.join(root, "orbitcode.config.json");
   let parsed: OrbitConfig;
   try {
     parsed = JSON.parse(readFileSync(configPath, "utf-8"));
   } catch (e) {
     throw new OrbitConfigError(
-      `myth.config.json in ${root} is not valid JSON: ${(e as Error).message}`,
+      `orbitcode.config.json in ${root} is not valid JSON: ${(e as Error).message}`,
     );
   }
   if (!parsed.projectId) {
     throw new OrbitConfigError(
-      `myth.config.json in ${root} has no "projectId". ${CREATE_HINT}`,
+      `orbitcode.config.json in ${root} has no "projectId". ${CREATE_HINT}`,
     );
   }
   return {
@@ -210,10 +210,9 @@ function generateAppHtml(config: OrbitConfig, entry: string): string {
 
 function buildVirtualEntry(entry: string): string {
   return `
-import { createRoot } from 'react-dom/client';
-import { createElement } from 'react';
+import { render, h } from 'preact';
 import App from '/${entry}';
-createRoot(document.getElementById('root')).render(createElement(App));
+render(h(App, null), document.getElementById('root'));
 `;
 }
 
@@ -315,7 +314,7 @@ export function hostFramePlugin(opts: HostFramePluginOptions): Plugin {
 }
 
 function readConfigSafe(root: string): OrbitConfig {
-  const configPath = path.join(root, "myth.config.json");
+  const configPath = path.join(root, "orbitcode.config.json");
   if (!existsSync(configPath)) return {};
   try {
     return JSON.parse(readFileSync(configPath, "utf-8"));

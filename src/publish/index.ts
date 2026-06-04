@@ -1,7 +1,7 @@
 /**
  * Top-level orchestrator for `myth publish`.
  *
- *   1. Resolve project root by walking up to myth.config.json (same
+ *   1. Resolve project root by walking up to orbitcode.config.json (same
  *      discipline as `myth run` — see `src/virtual-html.ts:loadConfigOrThrow`).
  *   2. Run `vite build` and emit the git object graph in memory.
  *   3. Run the browser-mediated auth handshake to get a session JWT.

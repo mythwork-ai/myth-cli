@@ -27,7 +27,8 @@ import { deflateSync } from 'node:zlib'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { build as viteBuild } from 'vite'
-import react from '@vitejs/plugin-react'
+import preact from '@preact/preset-vite'
+import { mythPlugin } from '../myth-plugin.js'
 
 const TEXT_ENC = new TextEncoder()
 
@@ -77,7 +78,7 @@ interface TreeEntry {
  * and emit the full git object graph. Returns the in-memory object map
  * plus the commit and root-tree hashes the worker needs to finalize.
  *
- * Vite plugin set mirrors `myth run` (the myth plugin + react), so
+ * Vite plugin set mirrors `myth run` (the myth plugin + preact), so
  * apps that work under `myth run` will build under `myth publish`
  * without surprises. We intentionally do NOT inject the host-frame
  * wrapper (that's a dev-loop convenience, not a production deploy
@@ -100,7 +101,7 @@ export async function buildAndHash(
         input: path.join(projectRoot, entry),
       },
     },
-    plugins: [react()],
+    plugins: [mythPlugin(), preact()],
   })
 
   return await hashDirectory(distDir)

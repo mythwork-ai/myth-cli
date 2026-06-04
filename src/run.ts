@@ -1,12 +1,28 @@
 import { createServer } from "vite";
 import type { ProxyOptions } from "vite";
-import react from "@vitejs/plugin-react";
+import preact from "@preact/preset-vite";
 import { mythPlugin } from "./myth-plugin.js";
 import { hostFramePlugin, loadConfigOrThrow, OrbitConfigError } from "./virtual-html.js";
 import { exec } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+
+const require = createRequire(import.meta.url);
+
+/**
+ * Resolve a package's ESM ("module") entry to an absolute path. Aliasing
+ * every preact/react subpath to the SAME resolved file is what guarantees a
+ * single preact instance: two copies (one for the renderer, one for hooks)
+ * make hooks read `undefined.__H` at render time.
+ */
+function resolveEsm(pkg: string): string {
+  const pkgJsonPath = require.resolve(`${pkg}/package.json`);
+  const pkgDir = path.dirname(pkgJsonPath);
+  const pkgJson = JSON.parse(readFileSync(pkgJsonPath, "utf-8"));
+  return path.join(pkgDir, pkgJson.module);
+}
 
 /** Candidate entry files tried in order when `myth run` is invoked
  * without --entry. Matches the conventions in modern mythwork apps:
@@ -151,6 +167,18 @@ export async function startServer(
   const root = loaded.root;
   const entry = resolveEntry(root, requestedEntry);
 
+  // Pin every preact/react specifier to ONE resolved ESM file (the CLI's own
+  // preact) so the renderer and hooks share a single instance.
+  const preactPaths = {
+    preact: resolveEsm("preact"),
+    "preact/compat": resolveEsm("preact/compat"),
+    "preact/hooks": resolveEsm("preact/hooks"),
+    "preact/jsx-runtime": resolveEsm("preact/jsx-runtime"),
+    "preact/jsx-dev-runtime": resolveEsm("preact/jsx-runtime"), // shares one module
+    "preact/debug": resolveEsm("preact/debug"),
+    "preact/devtools": resolveEsm("preact/devtools"),
+  };
+
   const plugins: import("vite").PluginOption[] = [
     hostFramePlugin({
       projectId: config.projectId,
@@ -159,7 +187,10 @@ export async function startServer(
       entry,
     }),
     mythPlugin(),
-    react(),
+    // OrbitCode apps are preact (`preact/hooks`, JSX → preact). The preset
+    // compiles JSX to preact; we map the react family ourselves via the
+    // alias table below, so disable the preset's own react aliasing.
+    preact({ reactAliasesEnabled: false }),
   ];
 
   // Auto-detect CSS dependencies and resolve them from myth-cli's node_modules
@@ -191,9 +222,26 @@ export async function startServer(
       __ORBIT_COLLAB_URL__: JSON.stringify(collabUrl),
     },
     resolve: {
+      // Single preact instance: react family → preact/compat, and every
+      // preact subpath → the one resolved ESM file. dedupe guards against a
+      // second copy sneaking in from the user project's own node_modules.
+      dedupe: ["preact", "preact/hooks", "preact/compat", "preact/jsx-runtime"],
       alias: {
         "@/": root + "/",
         ...cssAliases,
+        "react/jsx-runtime": preactPaths["preact/jsx-runtime"],
+        "react/jsx-dev-runtime": preactPaths["preact/jsx-dev-runtime"],
+        "react-dom/client": preactPaths["preact/compat"],
+        "react-dom/test-utils": preactPaths["preact/compat"],
+        "react-dom": preactPaths["preact/compat"],
+        react: preactPaths["preact/compat"],
+        "preact/jsx-runtime": preactPaths["preact/jsx-runtime"],
+        "preact/jsx-dev-runtime": preactPaths["preact/jsx-dev-runtime"],
+        "preact/hooks": preactPaths["preact/hooks"],
+        "preact/compat": preactPaths["preact/compat"],
+        "preact/debug": preactPaths["preact/debug"],
+        "preact/devtools": preactPaths["preact/devtools"],
+        preact: preactPaths.preact,
       },
     },
     server: {
