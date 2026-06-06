@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { selectSourceFiles } from '/Users/pollmann/Documents/hack/orbit-cli/.claude/worktrees/instant-source-publish/src/publish/source-select.js';
+import { selectSourceFiles } from './source-select.js';
 
 describe('glob leak test', () => {
   it('should exclude wildcard-matched files', () => {
