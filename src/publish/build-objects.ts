@@ -151,15 +151,24 @@ export async function hashDirectory(distDir: string): Promise<BuildResult> {
  * source-publish model — the CLI uploads source; the edge compiles.
  *
  * `preselected` lets the caller pass an already-computed file list (from
- * `selectSourceFiles`) to avoid a second filesystem walk.
+ * `selectSourceFiles`) to avoid a second filesystem walk. `overrides` maps a
+ * relative path to replacement bytes used instead of the on-disk contents — the
+ * Tailwind pre-bake injects compiled CSS this way without mutating the user's
+ * working tree.
  */
 export async function assembleSourceAndHash(
   root: string,
   preselected?: string[],
+  overrides?: Map<string, Uint8Array>,
 ): Promise<BuildResult> {
   const rels = preselected ?? selectSourceFiles(root)
   const files = new Map<string, Uint8Array>()
   for (const rel of rels) {
+    const override = overrides?.get(rel)
+    if (override) {
+      files.set(rel, override)
+      continue
+    }
     const bytes = new Uint8Array(await readFile(path.join(root, rel)))
     files.set(rel, bytes)
   }

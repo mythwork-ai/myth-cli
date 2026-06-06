@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { selectSourceFiles } from './source-select.js'
@@ -80,12 +80,58 @@ describe('selectSourceFiles', () => {
     expect(files).toContain('src/build/nested.js') // nested build kept
   })
 
-  it('works with no .gitignore (heuristic excludes only)', () => {
+  it('applies the hard secret floor even with no .gitignore', () => {
     rmSync(path.join(root, '.gitignore'), { force: true })
+    writeFileSync(path.join(root, 'server.pem'), 'KEY')
+    writeFileSync(path.join(root, 'app.key'), 'KEY')
+    writeFileSync(path.join(root, '.env.production'), 'SECRET=1')
+    writeFileSync(path.join(root, '.env.example'), 'SECRET=')
     const files = selectSourceFiles(root)
     expect(files).toContain('src/main.tsx')
     expect(files.some(f => f.startsWith('node_modules/'))).toBe(false)
-    expect(files).toContain('.env') // no gitignore → heuristic doesn't drop .env
+    // Secrets dropped by the floor regardless of .gitignore.
+    expect(files).not.toContain('.env')
+    expect(files).not.toContain('.env.production')
+    expect(files).not.toContain('server.pem')
+    expect(files).not.toContain('app.key')
+    // Safe sample files are re-included.
+    expect(files).toContain('.env.example')
+  })
+
+  it('excludes node_modules/.git at any depth but keeps nested build dirs', () => {
+    rmSync(path.join(root, '.gitignore'), { force: true })
+    mkdirSync(path.join(root, 'packages', 'a', 'node_modules'), { recursive: true })
+    writeFileSync(path.join(root, 'packages', 'a', 'node_modules', 'dep.js'), 'x')
+    mkdirSync(path.join(root, 'src', 'dist'), { recursive: true })
+    writeFileSync(path.join(root, 'src', 'dist', 'keep.js'), 'x')
+    const files = selectSourceFiles(root)
+    expect(files.some(f => f.includes('node_modules/'))).toBe(false)
+    expect(files).toContain('src/dist/keep.js') // nested dist kept (only root dist drops)
+  })
+
+  it('honors nested .gitignore files, not just the root one', () => {
+    rmSync(path.join(root, '.gitignore'), { force: true })
+    mkdirSync(path.join(root, 'src', 'sub'), { recursive: true })
+    writeFileSync(path.join(root, 'src', '.gitignore'), 'sub/\nlocal.json\n')
+    writeFileSync(path.join(root, 'src', 'local.json'), '{}')
+    writeFileSync(path.join(root, 'src', 'sub', 'ignored.ts'), 'x')
+    const files = selectSourceFiles(root)
+    expect(files).not.toContain('src/local.json')
+    expect(files.some(f => f.startsWith('src/sub/'))).toBe(false)
+    expect(files).toContain('src/main.tsx') // sibling source untouched
+  })
+
+  it('skips symlinks and does not crash on a dangling one', () => {
+    rmSync(path.join(root, '.gitignore'), { force: true })
+    symlinkSync('/nonexistent/target', path.join(root, 'dangling'))
+    symlinkSync(path.join(root, 'src', 'main.tsx'), path.join(root, 'linked.tsx'))
+    let files: string[] = []
+    expect(() => {
+      files = selectSourceFiles(root)
+    }).not.toThrow()
+    expect(files).not.toContain('dangling')
+    expect(files).not.toContain('linked.tsx')
+    expect(files).toContain('src/main.tsx')
   })
 
   it('returns POSIX-style relative paths, sorted, deterministic', () => {

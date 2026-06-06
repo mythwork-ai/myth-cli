@@ -6,7 +6,9 @@
  */
 
 const NATIVE_PREFIXES = ['@orbitcode/']
-const NATIVE_EXACT = new Set(['react', 'react-dom', 'react-dom/client'])
+// package.json dependency keys are package names, not import subpaths, so
+// `react-dom/client` (a subpath) is intentionally not listed here.
+const NATIVE_EXACT = new Set(['react', 'react-dom'])
 
 /**
  * Packages that cannot work over esm.sh in a browser (native bindings,

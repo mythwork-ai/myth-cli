@@ -164,4 +164,34 @@ describe('assembleSourceAndHash', () => {
     expect(res.rootTree).toMatch(HEX_64)
     expect(res.headCommit).toMatch(HEX_64)
   })
+
+  it('hashes a caller-provided preselected file list (no extra walk)', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'myth-asm-'))
+    await writeFile(path.join(root, 'a.txt'), 'a')
+    await writeFile(path.join(root, 'b.txt'), 'b')
+    // Only pass a.txt — b.txt must not appear in the graph.
+    const res = await assembleSourceAndHash(root, ['a.txt'])
+    expect(res.fileCount).toBe(1)
+  })
+
+  it('uses in-memory overrides instead of on-disk contents (Tailwind pre-bake)', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'myth-asm-'))
+    await writeFile(path.join(root, 'index.css'), '@import "tailwindcss";')
+    const enc = new TextEncoder()
+    const overridden = await assembleSourceAndHash(
+      root,
+      ['index.css'],
+      new Map([['index.css', enc.encode('.baked{}')]]),
+    )
+    const onDisk = await assembleSourceAndHash(root, ['index.css'])
+    // Same path, different bytes → different tree hash, proving the override won.
+    expect(overridden.rootTree).not.toBe(onDisk.rootTree)
+    // And it matches hashing the baked bytes directly.
+    const direct = await assembleSourceAndHash(
+      root,
+      ['index.css'],
+      new Map([['index.css', enc.encode('.baked{}')]]),
+    )
+    expect(overridden.rootTree).toBe(direct.rootTree)
+  })
 })

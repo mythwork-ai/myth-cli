@@ -44,7 +44,7 @@ Your app is **live for you immediately**, and becomes **public once an automated
 
 ### What gets uploaded
 
-`myth publish` uploads your source tree, honoring your `.gitignore`. It always **excludes** `node_modules`, `dist`, `.git`, and common build caches — and anything your `.gitignore` lists (so secrets and local artifacts never leave your machine). Your `package.json` + lockfile are uploaded so the platform can resolve your dependencies.
+`myth publish` uploads your source tree, honoring your `.gitignore` files (root **and** nested). It always **excludes** `node_modules` and `.git` (anywhere), root-level build output (`dist`, `.next`, build caches), and anything your `.gitignore` lists. As a safety net, common secret files (`.env`, `.env.*`, `*.pem`, `*.key`, private SSH keys, …) are **always** excluded even if you have no `.gitignore` — so secrets and local artifacts never leave your machine. (`.env.example` / `.sample` / `.template` are kept.) Symlinks are skipped. Your `package.json` + lockfile are uploaded so the platform can resolve your dependencies.
 
 ### Supported subset (current)
 

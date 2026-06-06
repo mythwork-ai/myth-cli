@@ -23,7 +23,7 @@ import { loadConfigOrThrow, OrbitConfigError } from '../virtual-html.js'
 import { assembleSourceAndHash } from './build-objects.js'
 import { selectSourceFiles } from './source-select.js'
 import { validateSource } from './validate.js'
-import { detectTailwind, prebakeTailwind } from './tailwind.js'
+import { detectTailwind, findTailwindEntry, prebakeTailwind } from './tailwind.js'
 import { runAuthHandshake } from './auth-handshake.js'
 import {
   checkBlobs,
@@ -99,13 +99,17 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
 
   // 1. Validate + assemble source (no local build — the edge compiles).
   const pkgPath = path.join(root, 'package.json')
-  const pkg = existsSync(pkgPath)
-    ? (JSON.parse(readFileSync(pkgPath, 'utf-8')) as {
-        dependencies?: Record<string, string>
-        devDependencies?: Record<string, string>
-      })
-    : {}
-  // Runtime deps drive validation + the edge importmap.
+  let pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> } = {}
+  if (existsSync(pkgPath)) {
+    try {
+      pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    } catch (e) {
+      throw new OrbitConfigError(`Cannot parse ${pkgPath}: ${(e as Error).message}`)
+    }
+  }
+  // Runtime deps drive validation + the edge importmap. (peerDependencies are
+  // not validated — an app's own imports come from its dependencies; a peer dep
+  // it actually imports should also appear in dependencies.)
   const deps: Record<string, string> = pkg.dependencies ?? {}
   // Tailwind is usually a devDependency (e.g. @tailwindcss/vite), so detection
   // must look at both dependency sets.
@@ -115,21 +119,26 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   if (errors.length > 0) {
     throw new OrbitConfigError('Cannot publish — fix these first:\n  - ' + errors.join('\n  - '))
   }
+  // Tailwind pre-bake: compile the entry stylesheet and inject the result into
+  // the upload set as an in-memory override — the user's source is never mutated.
+  let overrides: Map<string, Uint8Array> | undefined
   if (detectTailwind(allDeps)) {
-    console.log('[myth] Tailwind detected — pre-baking CSS...')
-    // Entry CSS heuristic: the project stylesheet that imports tailwind.
-    // Prefer src/index.css, then any src/*.css, then any *.css.
-    const entryCss =
-      files.find(f => f === 'src/index.css') ??
-      files.find(f => f.startsWith('src/') && f.endsWith('.css')) ??
-      files.find(f => f.endsWith('.css')) ??
-      'src/index.css'
-    prebakeTailwind(root, entryCss)
+    const entryCss = findTailwindEntry(root, files)
+    if (!entryCss) {
+      console.log(
+        '[myth] Tailwind detected, but no CSS entry with `@import "tailwindcss"` ' +
+          'was found — skipping pre-bake.',
+      )
+    } else {
+      console.log(`[myth] Tailwind detected — pre-baking ${entryCss}...`)
+      const baked = prebakeTailwind(root, entryCss)
+      overrides = new Map([[baked.generatedCssPath, new TextEncoder().encode(baked.css)]])
+    }
   }
   const buildStart = Date.now()
   console.log('[myth] Packaging source...')
   // Reuse the already-computed file list (avoid a second filesystem walk).
-  const built = await assembleSourceAndHash(root, files)
+  const built = await assembleSourceAndHash(root, files, overrides)
   const buildSec = ((Date.now() - buildStart) / 1000).toFixed(1)
   console.log(
     `[myth] Packaged in ${buildSec}s. ${built.fileCount} files, ` +
@@ -202,7 +211,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
  * serves *.llama.space. Defaults to myth.work for unparseable URLs
  * (which is the prod default — see resolveBackend).
  */
-function inferZoneSuffix(apiUrl: string): string {
+export function inferZoneSuffix(apiUrl: string): string {
   try {
     const u = new URL(apiUrl)
     const host = u.hostname
@@ -213,7 +222,7 @@ function inferZoneSuffix(apiUrl: string): string {
   }
 }
 
-function formatBytes(n: number): string {
+export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
