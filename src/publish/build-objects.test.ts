@@ -1,7 +1,7 @@
 /**
- * Unit tests for the git-object builder. Drives `hashDirectory` (the
- * Vite-less subset of `buildAndHash`) against a tmpdir fixture and
- * asserts:
+ * Unit tests for the git-object builder. Drives `hashDirectory`,
+ * `buildObjectsFromFiles`, and `assembleSourceAndHash` against tmpdir
+ * fixtures and asserts:
  *
  *   - Every emitted hash is 64-hex lowercase.
  *   - The same input produces deterministic output across runs.
@@ -18,7 +18,11 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { inflateSync } from 'node:zlib'
-import { hashDirectory } from './build-objects.js'
+import {
+  hashDirectory,
+  buildObjectsFromFiles,
+  assembleSourceAndHash,
+} from './build-objects.js'
 
 const HEX_64 = /^[0-9a-f]{64}$/
 
@@ -99,5 +103,95 @@ describe('hashDirectory', () => {
     expect(result.objects.size).toBe(2)
     expect(result.rootTree).toMatch(HEX_64)
     expect(result.headCommit).toMatch(HEX_64)
+  })
+})
+
+describe('buildObjectsFromFiles', () => {
+  it('hashes a path->bytes map into a deterministic object graph', async () => {
+    const enc = new TextEncoder()
+    const files = new Map<string, Uint8Array>([
+      ['src/main.tsx', enc.encode('export default 1')],
+      ['package.json', enc.encode('{"name":"x"}')],
+    ])
+    const a = await buildObjectsFromFiles(files)
+    const b = await buildObjectsFromFiles(files)
+    expect(a.rootTree).toBe(b.rootTree)
+    expect(a.headCommit).toBe(b.headCommit)
+    expect(a.fileCount).toBe(2)
+    // commit + root tree + src tree + 2 blobs == 5 objects
+    expect(a.objects.size).toBe(5)
+  })
+
+  it('produces a 64-hex root tree for a single root-level file', async () => {
+    const enc = new TextEncoder()
+    const files = new Map([['a.txt', enc.encode('hello')]])
+    const fromMap = await buildObjectsFromFiles(files)
+    expect(fromMap.rootTree).toMatch(HEX_64)
+  })
+
+  it('matches hashDirectory for the same on-disk tree', async () => {
+    // Build the same two-file tree on disk and via the map; root trees match.
+    const root = await mkdtemp(path.join(tmpdir(), 'myth-publish-map-'))
+    await mkdir(path.join(root, 'src'))
+    await writeFile(path.join(root, 'src', 'main.tsx'), 'export default 1')
+    await writeFile(path.join(root, 'package.json'), '{"name":"x"}')
+    const onDisk = await hashDirectory(root)
+
+    const enc = new TextEncoder()
+    const fromMap = await buildObjectsFromFiles(
+      new Map<string, Uint8Array>([
+        ['src/main.tsx', enc.encode('export default 1')],
+        ['package.json', enc.encode('{"name":"x"}')],
+      ]),
+    )
+    expect(fromMap.rootTree).toBe(onDisk.rootTree)
+  })
+})
+
+describe('assembleSourceAndHash', () => {
+  it('hashes selected source (excluding node_modules/dist) into an object graph', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'myth-asm-'))
+    await mkdir(path.join(root, 'src'))
+    await mkdir(path.join(root, 'node_modules'))
+    await mkdir(path.join(root, 'dist'))
+    await writeFile(path.join(root, 'src', 'main.tsx'), 'export default 1')
+    await writeFile(path.join(root, 'package.json'), '{"name":"x"}')
+    await writeFile(path.join(root, 'node_modules', 'x.js'), 'ignored')
+    await writeFile(path.join(root, 'dist', 'b.js'), 'ignored')
+    const res = await assembleSourceAndHash(root)
+    // 2 source files only (node_modules + dist excluded).
+    expect(res.fileCount).toBe(2)
+    expect(res.rootTree).toMatch(HEX_64)
+    expect(res.headCommit).toMatch(HEX_64)
+  })
+
+  it('hashes a caller-provided preselected file list (no extra walk)', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'myth-asm-'))
+    await writeFile(path.join(root, 'a.txt'), 'a')
+    await writeFile(path.join(root, 'b.txt'), 'b')
+    // Only pass a.txt — b.txt must not appear in the graph.
+    const res = await assembleSourceAndHash(root, ['a.txt'])
+    expect(res.fileCount).toBe(1)
+  })
+
+  it('uses in-memory overrides instead of on-disk contents (Tailwind pre-bake)', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'myth-asm-'))
+    await writeFile(path.join(root, 'index.css'), '@import "tailwindcss";')
+    const enc = new TextEncoder()
+    const overridden = await assembleSourceAndHash(
+      root,
+      ['index.css'],
+      new Map([['index.css', enc.encode('.baked{}')]]),
+    )
+    const onDisk = await assembleSourceAndHash(root, ['index.css'])
+    // Same path, different bytes → different tree hash, proving the override won.
+    expect(overridden.rootTree).not.toBe(onDisk.rootTree)
+    // And it matches hashing the baked bytes directly.
+    const direct = await assembleSourceAndHash(
+      root,
+      ['index.css'],
+      new Map([['index.css', enc.encode('.baked{}')]]),
+    )
+    expect(overridden.rootTree).toBe(direct.rootTree)
   })
 })

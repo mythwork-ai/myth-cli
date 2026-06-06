@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { resolveBackend } from './index.js'
+import { resolveBackend, inferZoneSuffix, formatBytes } from './index.js'
 
 describe('resolveBackend', () => {
   it('defaults to prod when --staging is not set', () => {
@@ -56,5 +56,26 @@ describe('resolveBackend', () => {
     })
     expect(apiUrl).toBe('https://api.llama.space')
     expect(authOrigin).toBe('http://local-auth')
+  })
+})
+
+describe('inferZoneSuffix', () => {
+  it('strips the api. prefix to get the serve zone', () => {
+    expect(inferZoneSuffix('https://api.myth.work')).toBe('myth.work')
+    expect(inferZoneSuffix('https://api.llama.space')).toBe('llama.space')
+  })
+  it('returns the host unchanged when there is no api. prefix', () => {
+    expect(inferZoneSuffix('http://localhost:9999')).toBe('localhost')
+  })
+  it('falls back to myth.work for an unparseable URL', () => {
+    expect(inferZoneSuffix('not a url')).toBe('myth.work')
+  })
+})
+
+describe('formatBytes', () => {
+  it('formats bytes, KB, and MB', () => {
+    expect(formatBytes(512)).toBe('512 B')
+    expect(formatBytes(2048)).toBe('2.0 KB')
+    expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB')
   })
 })

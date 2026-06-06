@@ -1,6 +1,14 @@
 /**
- * Build the in-memory git-format object graph that the publish worker
- * stores. Walks a built `dist/` directory and emits:
+ * Build the in-memory git-format object graph that the publish worker stores.
+ *
+ * Three entry points:
+ *   - `assembleSourceAndHash(root)` — the publish path: selects the app's
+ *     SOURCE (heuristic + .gitignore excludes) and hashes it.
+ *   - `buildObjectsFromFiles(map)` — pure path->bytes hashing (no disk).
+ *   - `hashDirectory(dir)` — walks an on-disk directory tree (used as a
+ *     reference/fixture helper in tests).
+ *
+ * All three emit:
  *
  *   - One blob object per file (raw file bytes framed as `blob <size>\0<bytes>`)
  *   - One tree object per directory (entries sorted git-style, framed as
@@ -26,8 +34,7 @@ import { createHash } from 'node:crypto'
 import { deflateSync } from 'node:zlib'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { build as viteBuild } from 'vite'
-import react from '@vitejs/plugin-react'
+import { selectSourceFiles } from './source-select.js'
 
 const TEXT_ENC = new TextEncoder()
 
@@ -73,43 +80,10 @@ interface TreeEntry {
 // ===========================================================================
 
 /**
- * Run `vite build` against `projectRoot`, then walk the produced `dist/`
- * and emit the full git object graph. Returns the in-memory object map
- * plus the commit and root-tree hashes the worker needs to finalize.
- *
- * Vite plugin set mirrors `myth run` (the myth plugin + react), so
- * apps that work under `myth run` will build under `myth publish`
- * without surprises. We intentionally do NOT inject the host-frame
- * wrapper (that's a dev-loop convenience, not a production deploy
- * artifact — see spec "What gets bundled").
- */
-export async function buildAndHash(
-  projectRoot: string,
-  entry: string,
-): Promise<BuildResult> {
-  const distDir = path.join(projectRoot, 'dist')
-
-  await viteBuild({
-    root: projectRoot,
-    configFile: false,
-    logLevel: 'warn',
-    build: {
-      outDir: distDir,
-      emptyOutDir: true,
-      rollupOptions: {
-        input: path.join(projectRoot, entry),
-      },
-    },
-    plugins: [react()],
-  })
-
-  return await hashDirectory(distDir)
-}
-
-/**
  * Walk a built directory and emit the git-object graph. Pure function of
- * the on-disk tree; no Vite involvement. Useful for tests that want to
- * skip the build step with a fixture directory.
+ * the on-disk tree; no Vite involvement. Retained as a reference/fixture
+ * helper and exercised by the unit tests; the publish path now uses
+ * `assembleSourceAndHash`.
  */
 export async function hashDirectory(distDir: string): Promise<BuildResult> {
   const objects = new Map<string, BuiltObject>()
@@ -169,6 +143,102 @@ export async function hashDirectory(distDir: string): Promise<BuildResult> {
     fileCount,
     totalBytes,
   }
+}
+
+/**
+ * Select the project's source files (heuristic + .gitignore excludes) and hash
+ * them into the git object graph. Replaces buildAndHash (vite) for the
+ * source-publish model — the CLI uploads source; the edge compiles.
+ *
+ * `preselected` lets the caller pass an already-computed file list (from
+ * `selectSourceFiles`) to avoid a second filesystem walk. `overrides` maps a
+ * relative path to replacement bytes used instead of the on-disk contents — the
+ * Tailwind pre-bake injects compiled CSS this way without mutating the user's
+ * working tree.
+ */
+export async function assembleSourceAndHash(
+  root: string,
+  preselected?: string[],
+  overrides?: Map<string, Uint8Array>,
+): Promise<BuildResult> {
+  const rels = preselected ?? selectSourceFiles(root)
+  const files = new Map<string, Uint8Array>()
+  for (const rel of rels) {
+    const override = overrides?.get(rel)
+    if (override) {
+      files.set(rel, override)
+      continue
+    }
+    const bytes = new Uint8Array(await readFile(path.join(root, rel)))
+    files.set(rel, bytes)
+  }
+  return buildObjectsFromFiles(files)
+}
+
+/**
+ * Build the git object graph from an in-memory map of POSIX relative path ->
+ * file bytes. Pure (no disk). Mirrors hashDirectory's framing/sorting, so for
+ * non-executable files the resulting hashes are identical to an on-disk walk
+ * of the same tree. (Unlike hashDirectory it has no file-mode information, so
+ * every blob is recorded as mode 100644; executable bits are not preserved.
+ * This is fine for the source-publish path — app source is not executable.)
+ */
+export async function buildObjectsFromFiles(
+  files: Map<string, Uint8Array>,
+): Promise<BuildResult> {
+  const objects = new Map<string, BuiltObject>()
+  let fileCount = 0
+  let totalBytes = 0
+
+  interface Dir {
+    dirs: Map<string, Dir>
+    files: Map<string, Uint8Array>
+  }
+  const rootDir: Dir = { dirs: new Map(), files: new Map() }
+  for (const [rel, bytes] of files) {
+    const parts = rel.split('/')
+    let cur = rootDir
+    for (let i = 0; i < parts.length - 1; i++) {
+      const seg = parts[i]!
+      let next = cur.dirs.get(seg)
+      if (!next) {
+        next = { dirs: new Map(), files: new Map() }
+        cur.dirs.set(seg, next)
+      }
+      cur = next
+    }
+    cur.files.set(parts[parts.length - 1]!, bytes)
+  }
+
+  async function visit(dir: Dir): Promise<string> {
+    const entries: TreeEntry[] = []
+    for (const [name, bytes] of dir.files) {
+      const blob = await buildBlob(bytes)
+      if (!objects.has(blob.hash)) {
+        objects.set(blob.hash, blob)
+        totalBytes += blob.deflated.length
+      }
+      fileCount++
+      entries.push({ mode: '100644', name, hash: blob.hash })
+    }
+    for (const [name, sub] of dir.dirs) {
+      const treeHash = await visit(sub)
+      entries.push({ mode: '40000', name, hash: treeHash })
+    }
+    const tree = await buildTree(entries)
+    if (!objects.has(tree.hash)) {
+      objects.set(tree.hash, tree)
+      totalBytes += tree.deflated.length
+    }
+    return tree.hash
+  }
+
+  const rootTree = await visit(rootDir)
+  const commit = await buildCommit({ tree: rootTree })
+  objects.set(commit.hash, commit)
+  totalBytes += commit.deflated.length
+
+  return { objects, headCommit: commit.hash, rootTree, fileCount, totalBytes }
 }
 
 // ===========================================================================

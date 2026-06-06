@@ -3,7 +3,8 @@
  *
  *   1. Resolve project root by walking up to myth.config.json (same
  *      discipline as `myth run` — see `src/virtual-html.ts:loadConfigOrThrow`).
- *   2. Run `vite build` and emit the git object graph in memory.
+ *   2. Validate + package the app's SOURCE (no local build) and emit the git
+ *      object graph in memory. Compilation happens at the edge at serve time.
  *   3. Run the browser-mediated auth handshake to get a session JWT.
  *   4. POST /publish/check to find which blobs need uploading.
  *   5. PUT each missing blob (concurrency 6, retries on 5xx).
@@ -16,10 +17,13 @@
  * tester's opt-in.
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { loadConfigOrThrow, OrbitConfigError } from '../virtual-html.js'
-import { buildAndHash } from './build-objects.js'
+import { assembleSourceAndHash } from './build-objects.js'
+import { selectSourceFiles } from './source-select.js'
+import { validateSource } from './validate.js'
+import { detectTailwind, findTailwindEntry, prebakeTailwind } from './tailwind.js'
 import { runAuthHandshake } from './auth-handshake.js'
 import {
   checkBlobs,
@@ -28,9 +32,6 @@ import {
   uploadBlobs,
 } from './client.js'
 import { createProgress } from './progress.js'
-
-/** Vite entry candidates — same list as `myth run` (src/run.ts). */
-const DEFAULT_ENTRY_CANDIDATES = ['src/main.tsx', 'src/main.ts', 'src/App.tsx', 'App.tsx']
 
 export interface PublishOptions {
   /** Working directory the command was invoked from. */
@@ -43,8 +44,6 @@ export interface PublishOptions {
   apiUrl?: string
   /** Override the auth origin (escape hatch / for local dev). */
   authOrigin?: string
-  /** Override the auto-detected entry. */
-  entry?: string
 }
 
 const PROD_API_URL = 'https://api.myth.work'
@@ -78,22 +77,6 @@ export function resolveBackend(opts: {
   return { apiUrl, authOrigin }
 }
 
-function resolveEntry(root: string, requested: string | undefined): string {
-  if (requested !== undefined) {
-    if (!existsSync(path.join(root, requested))) {
-      throw new OrbitConfigError(`entry not found: ${path.join(root, requested)}`)
-    }
-    return requested
-  }
-  for (const candidate of DEFAULT_ENTRY_CANDIDATES) {
-    if (existsSync(path.join(root, candidate))) return candidate
-  }
-  throw new OrbitConfigError(
-    `no entry file found in ${root}. Tried: ${DEFAULT_ENTRY_CANDIDATES.join(', ')}. ` +
-      `Pass --entry <file> to override.`,
-  )
-}
-
 /**
  * Public entry point — wired into `bin/myth.ts` as the `publish` case.
  * Throws on hard failures (config missing, build fails, upload aborts);
@@ -103,7 +86,6 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   const loaded = loadConfigOrThrow(opts.cwd)
   const root = loaded.root
   const config = loaded.config
-  const entry = resolveEntry(root, opts.entry)
   // shortName precedence: --name flag > config.defaultPublishName.
   const shortName =
     opts.shortName ??
@@ -115,13 +97,51 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   console.log(`[myth] Project: ${config.name} (${config.projectId})`)
   console.log(`[myth] Backend: ${apiUrl}`)
 
-  // 1. Build + hash.
+  // 1. Validate + assemble source (no local build — the edge compiles).
+  const pkgPath = path.join(root, 'package.json')
+  let pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> } = {}
+  if (existsSync(pkgPath)) {
+    try {
+      pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    } catch (e) {
+      throw new OrbitConfigError(`Cannot parse ${pkgPath}: ${(e as Error).message}`)
+    }
+  }
+  // Runtime deps drive validation + the edge importmap. (peerDependencies are
+  // not validated — an app's own imports come from its dependencies; a peer dep
+  // it actually imports should also appear in dependencies.)
+  const deps: Record<string, string> = pkg.dependencies ?? {}
+  // Tailwind is usually a devDependency (e.g. @tailwindcss/vite), so detection
+  // must look at both dependency sets.
+  const allDeps: Record<string, string> = { ...(pkg.devDependencies ?? {}), ...deps }
+  const files = selectSourceFiles(root)
+  const errors = validateSource({ files, deps })
+  if (errors.length > 0) {
+    throw new OrbitConfigError('Cannot publish — fix these first:\n  - ' + errors.join('\n  - '))
+  }
+  // Tailwind pre-bake: compile the entry stylesheet and inject the result into
+  // the upload set as an in-memory override — the user's source is never mutated.
+  let overrides: Map<string, Uint8Array> | undefined
+  if (detectTailwind(allDeps)) {
+    const entryCss = findTailwindEntry(root, files)
+    if (!entryCss) {
+      console.log(
+        '[myth] Tailwind detected, but no CSS entry with `@import "tailwindcss"` ' +
+          'was found — skipping pre-bake.',
+      )
+    } else {
+      console.log(`[myth] Tailwind detected — pre-baking ${entryCss}...`)
+      const baked = prebakeTailwind(root, entryCss)
+      overrides = new Map([[baked.generatedCssPath, new TextEncoder().encode(baked.css)]])
+    }
+  }
   const buildStart = Date.now()
-  console.log('[myth] Building app (vite build)...')
-  const built = await buildAndHash(root, entry)
+  console.log('[myth] Packaging source...')
+  // Reuse the already-computed file list (avoid a second filesystem walk).
+  const built = await assembleSourceAndHash(root, files, overrides)
   const buildSec = ((Date.now() - buildStart) / 1000).toFixed(1)
   console.log(
-    `[myth] Built in ${buildSec}s. ${built.fileCount} files, ` +
+    `[myth] Packaged in ${buildSec}s. ${built.fileCount} files, ` +
       `${formatBytes(built.totalBytes)}.`,
   )
 
@@ -177,7 +197,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     rootTree: built.rootTree,
     shortName,
   })
-  console.log('[myth] ✓ Published.')
+  console.log('[myth] ✓ Published. (Live for you now; public once the safety scan passes.)')
   const zoneSuffix = inferZoneSuffix(apiUrl)
   console.log(`[myth]   Canonical: https://${result.canonical}.${zoneSuffix}`)
   if (result.alias) {
@@ -191,7 +211,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
  * serves *.llama.space. Defaults to myth.work for unparseable URLs
  * (which is the prod default — see resolveBackend).
  */
-function inferZoneSuffix(apiUrl: string): string {
+export function inferZoneSuffix(apiUrl: string): string {
   try {
     const u = new URL(apiUrl)
     const host = u.hostname
@@ -202,7 +222,7 @@ function inferZoneSuffix(apiUrl: string): string {
   }
 }
 
-function formatBytes(n: number): string {
+export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / (1024 * 1024)).toFixed(1)} MB`

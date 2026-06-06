@@ -48,9 +48,10 @@ Usage:
                                  directory with a stable local projectId
   myth run [--entry <file>]      Run the current directory as a mythwork app
              [--port <port>]     (default entry: src/main.tsx, src/App.tsx, App.tsx)
-  myth publish [--name <name>]   Build + upload the current project to the
-               [--staging]       publish worker. Default backend is prod
-               [--api <url>]     (api.myth.work); --staging uses api.llama.space.
+  myth publish [--name <name>]   Upload the current app's SOURCE to myth.work;
+               [--staging]       it compiles at the edge (no local build).
+               [--api <url>]     Default backend is prod (api.myth.work);
+                                 --staging uses api.llama.space.
 
 Examples:
   myth clone reveal              # Clone the reveal example
@@ -150,7 +151,6 @@ async function publish(pubArgs: string[]) {
   const shortName = parseStringFlag(pubArgs, "--name");
   const apiUrl = parseStringFlag(pubArgs, "--api");
   const staging = pubArgs.includes("--staging");
-  const explicitEntry = parseEntry(pubArgs);
   const { publishCommand } = await import("../src/publish/index.js");
   const { PublishError } = await import("../src/publish/client.js");
   const { HandshakeTimeoutError } = await import("../src/publish/auth-handshake.js");
@@ -160,7 +160,6 @@ async function publish(pubArgs: string[]) {
       shortName,
       staging,
       apiUrl,
-      entry: explicitEntry,
     });
   } catch (err) {
     if (err instanceof PublishError) {
