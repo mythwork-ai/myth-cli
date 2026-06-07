@@ -1,0 +1,48 @@
+name: Code Review
+
+# Auto-reviews every PR using Anthropic's official code-review plugin
+# from claude-code-plugins marketplace. Pattern copied verbatim from:
+#   https://code.claude.com/docs/en/github-actions (Using skills section)
+#
+# Required GitHub secret:
+#   ANTHROPIC_API_KEY  -- from console.anthropic.com
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The code-review plugin's Step 1 bails if claude[bot] has ever commented
+      # on the PR. Deleting prior review comments first lets the bot re-review
+      # on every push (matching the managed Code Review service's behavior).
+      - name: Clear prior Claude review comments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.user.login == "claude[bot]") | select(.body | startswith("## Code review")) | .id' \
+          | while read -r id; do
+              echo "Deleting prior review comment $id"
+              gh api -X DELETE "repos/$REPO/issues/comments/$id"
+            done
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
+          plugins: "code-review@claude-code-plugins"
+          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          claude_args: "--model claude-opus-4-7 --dangerously-skip-permissions"
