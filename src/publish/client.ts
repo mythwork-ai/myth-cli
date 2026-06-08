@@ -68,6 +68,8 @@ export interface FinalizeResult {
   canonical: string
   /** Alias short-name if shortName was provided. null otherwise. */
   alias: string | null
+  /** Non-fatal advisories from the edge compile (e.g. host-version overrides). */
+  warnings: string[]
 }
 
 /**
@@ -266,6 +268,11 @@ export async function finalizePublish(
     tree: parsed.tree,
     canonical: parsed.canonical,
     alias: typeof parsed.alias === 'string' ? parsed.alias : null,
+    warnings: Array.isArray((parsed as { warnings?: unknown }).warnings)
+      ? ((parsed as { warnings?: unknown }).warnings as unknown[]).filter(
+          (w): w is string => typeof w === 'string',
+        )
+      : [],
   }
 }
 

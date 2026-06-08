@@ -203,6 +203,9 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   if (result.alias) {
     console.log(`[myth]   Alias:     https://${result.alias}.${zoneSuffix}`)
   }
+  for (const w of result.warnings) {
+    console.log(`[myth] ⚠ ${w}`)
+  }
 }
 
 /**

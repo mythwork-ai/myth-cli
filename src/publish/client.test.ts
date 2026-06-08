@@ -246,6 +246,30 @@ describe('finalizePublish', () => {
     })
     expect(result.alias).toBe('myapp')
     expect(result.canonical).toBe('cccc'.repeat(13))
+    // No warnings field in the response → defaults to [].
+    expect(result.warnings).toEqual([])
+  })
+
+  it('parses non-fatal warnings from the response', async () => {
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(url)).toBe(`${API}/publish`)
+      const body = JSON.parse(String(init?.body))
+      return jsonRes({
+        commit: body.headCommit,
+        tree: 'b'.repeat(64),
+        canonical: 'cccc'.repeat(13),
+        alias: 'myapp',
+        warnings: ['w1'],
+      })
+    }) as unknown as typeof fetch
+    const result = await finalizePublish('a'.repeat(64), {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      rootTree: ROOT_TREE,
+      shortName: 'myapp',
+      fetch: fakeFetch,
+    })
+    expect(result.warnings).toEqual(['w1'])
   })
 
   it('omits shortName from the body when undefined', async () => {
