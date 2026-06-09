@@ -62,12 +62,14 @@ myth publish --name my-app --staging
 ### Flags
 
 ```bash
-myth publish [--name <shortName>] [--staging] [--api <url>]
+myth publish [--name <shortName>] [--default] [--force] [--staging] [--api <url>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--name` | none (canonical only) | Request `{name}.myth.work` alias. First-claim-wins. |
+| `--default` / `--apex` | unset | Also set this publish as the zone apex (`https://{zone}/`, the reserved `~apex` pointer). Owner-gated: your signed-in user must match the deployed `APEX_OWNER_USER_ID`. `--name ~apex` is sugar for this. |
+| `--force` | unset | Publish even when the target URL already serves identical content. Without it, an exact served-tree match no-ops (no commit minted). |
 | `--staging` | unset (publishes to prod) | Publish to `api.llama.space` instead of `api.myth.work`. |
 | `--api` | derived from `--staging` | Override the worker base URL (escape hatch for local dev). |
 
@@ -78,7 +80,9 @@ Environment variables (lower precedence than flags):
 - `MYTH_API_URL` — same as `--api`.
 - `MYTH_AUTH_URL` — override the auth landing origin.
 
-Token storage is in-memory per invocation. Each publish runs the browser handshake fresh — no on-disk cache (yet).
+Sessions are acquired as: `MYTH_SESSION_TOKEN` env (headless/CI) → on-disk
+cache at `~/.config/myth/session-{auth-host}.json` (0600, reused until 5
+minutes before expiry) → browser handshake (then cached for next time).
 
 ## Config
 

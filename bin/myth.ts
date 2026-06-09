@@ -49,8 +49,11 @@ Usage:
   myth run [--entry <file>]      Run the current directory as a mythwork app
              [--port <port>]     (default entry: src/main.tsx, src/App.tsx, App.tsx)
   myth publish [--name <name>]   Upload the current app's SOURCE to myth.work;
-               [--staging]       it compiles at the edge (no local build).
-               [--api <url>]     Default backend is prod (api.myth.work);
+               [--default]       it compiles at the edge (no local build).
+               [--staging]       --default (or --name ~apex) also sets the
+               [--force]         zone apex, https://{zone}/ (owner-gated).
+               [--api <url>]     Unchanged content no-ops unless --force.
+                                 Default backend is prod (api.myth.work);
                                  --staging uses api.llama.space.
 
 Examples:
@@ -148,9 +151,18 @@ async function run(runArgs: string[]) {
 }
 
 async function publish(pubArgs: string[]) {
-  const shortName = parseStringFlag(pubArgs, "--name");
+  let shortName = parseStringFlag(pubArgs, "--name");
   const apiUrl = parseStringFlag(pubArgs, "--api");
   const staging = pubArgs.includes("--staging");
+  let apex = pubArgs.includes("--default") || pubArgs.includes("--apex");
+  const force = pubArgs.includes("--force");
+  // `--name ~apex` is sugar for --default: the reserved ~apex ALIASES key is
+  // the apex pointer, but `~` is outside the alias grammar, so it maps to the
+  // wire field `apex: true` instead of a literal shortName.
+  if (shortName === "~apex") {
+    apex = true;
+    shortName = undefined;
+  }
   const { publishCommand } = await import("../src/publish/index.js");
   const { PublishError } = await import("../src/publish/client.js");
   const { HandshakeTimeoutError } = await import("../src/publish/auth-handshake.js");
@@ -160,6 +172,8 @@ async function publish(pubArgs: string[]) {
       shortName,
       staging,
       apiUrl,
+      apex,
+      force,
     });
   } catch (err) {
     if (err instanceof PublishError) {

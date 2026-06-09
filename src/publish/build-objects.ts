@@ -160,6 +160,7 @@ export async function assembleSourceAndHash(
   root: string,
   preselected?: string[],
   overrides?: Map<string, Uint8Array>,
+  opts: { timestamp?: number } = {},
 ): Promise<BuildResult> {
   const rels = preselected ?? selectSourceFiles(root)
   const files = new Map<string, Uint8Array>()
@@ -172,7 +173,7 @@ export async function assembleSourceAndHash(
     const bytes = new Uint8Array(await readFile(path.join(root, rel)))
     files.set(rel, bytes)
   }
-  return buildObjectsFromFiles(files)
+  return buildObjectsFromFiles(files, opts)
 }
 
 /**
@@ -185,6 +186,7 @@ export async function assembleSourceAndHash(
  */
 export async function buildObjectsFromFiles(
   files: Map<string, Uint8Array>,
+  opts: { timestamp?: number } = {},
 ): Promise<BuildResult> {
   const objects = new Map<string, BuiltObject>()
   let fileCount = 0
@@ -234,7 +236,13 @@ export async function buildObjectsFromFiles(
   }
 
   const rootTree = await visit(rootDir)
-  const commit = await buildCommit({ tree: rootTree })
+  // Real author date by default (meaningful in an exported git history);
+  // the publish-level no-op skip is what prevents commit churn for
+  // unchanged content. Tests pin `opts.timestamp` for determinism.
+  const commit = await buildCommit({
+    tree: rootTree,
+    timestamp: opts.timestamp ?? Math.floor(Date.now() / 1000),
+  })
   objects.set(commit.hash, commit)
   totalBytes += commit.deflated.length
 

@@ -195,3 +195,20 @@ describe('assembleSourceAndHash', () => {
     expect(overridden.rootTree).toBe(direct.rootTree)
   })
 })
+
+describe('commit timestamps (assemble path)', () => {
+  it('tree is timestamp-independent; the commit carries the (real or pinned) date', async () => {
+    const { buildObjectsFromFiles } = await import('./build-objects.js')
+    const files = new Map<string, Uint8Array>([
+      ['src/main.tsx', new TextEncoder().encode('export default 1')],
+    ])
+    const a = await buildObjectsFromFiles(files, { timestamp: 123 })
+    const b = await buildObjectsFromFiles(files, { timestamp: 123 })
+    const c = await buildObjectsFromFiles(files, { timestamp: 456 })
+    // Deterministic when pinned…
+    expect(b.headCommit).toBe(a.headCommit)
+    // …and a different date moves the commit but never the content address.
+    expect(c.rootTree).toBe(a.rootTree)
+    expect(c.headCommit).not.toBe(a.headCommit)
+  })
+})
