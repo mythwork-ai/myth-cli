@@ -18,7 +18,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { loadConfigOrThrow, OrbitConfigError } from '../virtual-html.js'
@@ -122,6 +122,23 @@ function jwtExp(token: string): number | null {
 const TOKEN_EXP_MARGIN_SECONDS = 300
 
 /**
+ * Persist the session cache with owner-only permissions ENFORCED, not just
+ * requested: `writeFile`'s `mode` applies only when the file is created
+ * (O_CREAT); the default 'w' flag truncates an existing inode and keeps its
+ * old permission bits. The explicit chmod covers the overwrite path (and a
+ * pre-existing loose file); the dir is owner-only too. Exported for tests.
+ */
+export async function writeSessionCache(
+  cacheFile: string,
+  token: string,
+  who: string,
+): Promise<void> {
+  await mkdir(path.dirname(cacheFile), { recursive: true, mode: 0o700 })
+  await writeFile(cacheFile, JSON.stringify({ token, who }), { mode: 0o600 })
+  await chmod(cacheFile, 0o600)
+}
+
+/**
  * Acquire a session token. `MYTH_SESSION_TOKEN` (headless/CI) wins; then a
  * cached token that isn't within 5 minutes of expiry; else the browser
  * handshake, whose token is cached for next time.
@@ -155,10 +172,7 @@ async function acquireSessionToken(authOrigin: string): Promise<{
   const handshake = await runAuthHandshake({ authOrigin })
   const who = handshake.userEmail ?? handshake.userId ?? '(unknown user)'
   try {
-    await mkdir(path.dirname(cacheFile), { recursive: true })
-    await writeFile(cacheFile, JSON.stringify({ token: handshake.sessionToken, who }), {
-      mode: 0o600,
-    })
+    await writeSessionCache(cacheFile, handshake.sessionToken, who)
   } catch {
     // cache write is best-effort; the publish proceeds either way
   }
