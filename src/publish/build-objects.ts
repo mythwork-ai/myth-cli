@@ -151,28 +151,20 @@ export async function hashDirectory(distDir: string): Promise<BuildResult> {
  * source-publish model — the CLI uploads source; the edge compiles.
  *
  * `preselected` lets the caller pass an already-computed file list (from
- * `selectSourceFiles`) to avoid a second filesystem walk. `overrides` maps a
- * relative path to replacement bytes used instead of the on-disk contents — the
- * Tailwind pre-bake injects compiled CSS this way without mutating the user's
- * working tree.
+ * `selectSourceFiles`) to avoid a second filesystem walk.
  */
 export async function assembleSourceAndHash(
   root: string,
   preselected?: string[],
-  overrides?: Map<string, Uint8Array>,
+  opts: { timestamp?: number } = {},
 ): Promise<BuildResult> {
   const rels = preselected ?? selectSourceFiles(root)
   const files = new Map<string, Uint8Array>()
   for (const rel of rels) {
-    const override = overrides?.get(rel)
-    if (override) {
-      files.set(rel, override)
-      continue
-    }
     const bytes = new Uint8Array(await readFile(path.join(root, rel)))
     files.set(rel, bytes)
   }
-  return buildObjectsFromFiles(files)
+  return buildObjectsFromFiles(files, opts)
 }
 
 /**
@@ -185,6 +177,7 @@ export async function assembleSourceAndHash(
  */
 export async function buildObjectsFromFiles(
   files: Map<string, Uint8Array>,
+  opts: { timestamp?: number } = {},
 ): Promise<BuildResult> {
   const objects = new Map<string, BuiltObject>()
   let fileCount = 0
@@ -234,7 +227,13 @@ export async function buildObjectsFromFiles(
   }
 
   const rootTree = await visit(rootDir)
-  const commit = await buildCommit({ tree: rootTree })
+  // Real author date by default (meaningful in an exported git history);
+  // the publish-level no-op skip is what prevents commit churn for
+  // unchanged content. Tests pin `opts.timestamp` for determinism.
+  const commit = await buildCommit({
+    tree: rootTree,
+    timestamp: opts.timestamp ?? Math.floor(Date.now() / 1000),
+  })
   objects.set(commit.hash, commit)
   totalBytes += commit.deflated.length
 

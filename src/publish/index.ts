@@ -18,13 +18,15 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { loadConfigOrThrow, OrbitConfigError } from '../virtual-html.js'
 import { assembleSourceAndHash } from './build-objects.js'
 import { selectSourceFiles } from './source-select.js'
 import { validateSource } from './validate.js'
-import { detectTailwind, findTailwindEntry, prebakeTailwind } from './tailwind.js'
 import { runAuthHandshake } from './auth-handshake.js'
+import { hexToCrockford256, servedTreeLabel } from './crockford.js'
 import {
   checkBlobs,
   finalizePublish,
@@ -44,6 +46,14 @@ export interface PublishOptions {
   apiUrl?: string
   /** Override the auth origin (escape hatch / for local dev). */
   authOrigin?: string
+  /**
+   * Set this publish as the zone's apex default app (https://{zone}/ —
+   * the reserved `~apex` pointer). Owner-gated server-side: the session's
+   * userId must equal the deployed APEX_OWNER_USER_ID.
+   */
+  apex?: boolean
+  /** Publish even when the target URL already serves this exact content. */
+  force?: boolean
 }
 
 const PROD_API_URL = 'https://api.myth.work'
@@ -77,6 +87,97 @@ export function resolveBackend(opts: {
   return { apiUrl, authOrigin }
 }
 
+
+// ===========================================================================
+// Session-token acquisition: env → cache → browser handshake
+// ===========================================================================
+
+function tokenCachePath(authOrigin: string): string {
+  const host = (() => {
+    try {
+      return new URL(authOrigin).hostname
+    } catch {
+      return 'default'
+    }
+  })()
+  return path.join(os.homedir(), '.config', 'myth', `session-${host}.json`)
+}
+
+/** JWT exp (unix seconds) without verification — good enough to skip a
+ *  cached token the worker would reject anyway. */
+function jwtExp(token: string): number | null {
+  const payload = token.split('.')[1]
+  if (!payload) return null
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8')) as {
+      exp?: unknown
+    }
+    return typeof parsed.exp === 'number' ? parsed.exp : null
+  } catch {
+    return null
+  }
+}
+
+const TOKEN_EXP_MARGIN_SECONDS = 300
+
+/**
+ * Persist the session cache with owner-only permissions ENFORCED, not just
+ * requested: `writeFile`'s `mode` applies only when the file is created
+ * (O_CREAT); the default 'w' flag truncates an existing inode and keeps its
+ * old permission bits. The explicit chmod covers the overwrite path (and a
+ * pre-existing loose file); the dir is owner-only too. Exported for tests.
+ */
+export async function writeSessionCache(
+  cacheFile: string,
+  token: string,
+  who: string,
+): Promise<void> {
+  await mkdir(path.dirname(cacheFile), { recursive: true, mode: 0o700 })
+  await writeFile(cacheFile, JSON.stringify({ token, who }), { mode: 0o600 })
+  await chmod(cacheFile, 0o600)
+}
+
+/**
+ * Acquire a session token. `MYTH_SESSION_TOKEN` (headless/CI) wins; then a
+ * cached token that isn't within 5 minutes of expiry; else the browser
+ * handshake, whose token is cached for next time.
+ */
+async function acquireSessionToken(authOrigin: string): Promise<{
+  token: string
+  who: string
+}> {
+  const envToken = process.env.MYTH_SESSION_TOKEN
+  if (envToken) return { token: envToken, who: '(MYTH_SESSION_TOKEN)' }
+
+  const cacheFile = tokenCachePath(authOrigin)
+  try {
+    const cached = JSON.parse(await readFile(cacheFile, 'utf-8')) as {
+      token?: unknown
+      who?: unknown
+    }
+    if (typeof cached.token === 'string') {
+      const exp = jwtExp(cached.token)
+      if (exp !== null && exp > Date.now() / 1000 + TOKEN_EXP_MARGIN_SECONDS) {
+        return {
+          token: cached.token,
+          who: typeof cached.who === 'string' ? cached.who : '(cached session)',
+        }
+      }
+    }
+  } catch {
+    // no cache / unreadable — fall through to the handshake
+  }
+
+  const handshake = await runAuthHandshake({ authOrigin })
+  const who = handshake.userEmail ?? handshake.userId ?? '(unknown user)'
+  try {
+    await writeSessionCache(cacheFile, handshake.sessionToken, who)
+  } catch {
+    // cache write is best-effort; the publish proceeds either way
+  }
+  return { token: handshake.sessionToken, who }
+}
+
 /**
  * Public entry point — wired into `bin/myth.ts` as the `publish` case.
  * Throws on hard failures (config missing, build fails, upload aborts);
@@ -94,8 +195,9 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
       : undefined)
 
   const { apiUrl, authOrigin } = resolveBackend(opts)
+  const zoneSuffix = inferZoneSuffix(apiUrl)
   console.log(`[myth] Project: ${config.name} (${config.projectId})`)
-  console.log(`[myth] Backend: ${apiUrl}`)
+  console.log(`[myth] Backend: ${apiUrl}${opts.apex ? ' (apex default)' : ''}`)
 
   // 1. Validate + assemble source (no local build — the edge compiles).
   const pkgPath = path.join(root, 'package.json')
@@ -111,44 +213,47 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   // not validated — an app's own imports come from its dependencies; a peer dep
   // it actually imports should also appear in dependencies.)
   const deps: Record<string, string> = pkg.dependencies ?? {}
-  // Tailwind is usually a devDependency (e.g. @tailwindcss/vite), so detection
-  // must look at both dependency sets.
-  const allDeps: Record<string, string> = { ...(pkg.devDependencies ?? {}), ...deps }
   const files = selectSourceFiles(root)
   const errors = validateSource({ files, deps })
   if (errors.length > 0) {
     throw new OrbitConfigError('Cannot publish — fix these first:\n  - ' + errors.join('\n  - '))
   }
-  // Tailwind pre-bake: compile the entry stylesheet and inject the result into
-  // the upload set as an in-memory override — the user's source is never mutated.
-  let overrides: Map<string, Uint8Array> | undefined
-  if (detectTailwind(allDeps)) {
-    const entryCss = findTailwindEntry(root, files)
-    if (!entryCss) {
-      console.log(
-        '[myth] Tailwind detected, but no CSS entry with `@import "tailwindcss"` ' +
-          'was found — skipping pre-bake.',
-      )
-    } else {
-      console.log(`[myth] Tailwind detected — pre-baking ${entryCss}...`)
-      const baked = prebakeTailwind(root, entryCss)
-      overrides = new Map([[baked.generatedCssPath, new TextEncoder().encode(baked.css)]])
-    }
-  }
+  // No local build of any kind — Tailwind included. The platform compiles
+  // source server-side (Sucrase + Tailwind v4 + esm.sh importmaps), so the
+  // published tree is exactly the source: deterministic hashes, one bake path.
   const buildStart = Date.now()
   console.log('[myth] Packaging source...')
   // Reuse the already-computed file list (avoid a second filesystem walk).
-  const built = await assembleSourceAndHash(root, files, overrides)
+  const built = await assembleSourceAndHash(root, files)
   const buildSec = ((Date.now() - buildStart) / 1000).toFixed(1)
   console.log(
     `[myth] Packaged in ${buildSec}s. ${built.fileCount} files, ` +
-      `${formatBytes(built.totalBytes)}.`,
+      `${formatBytes(built.totalBytes)} (tree ${built.rootTree.slice(0, 12)}…).`,
   )
 
-  // 2. Auth.
-  const handshake = await runAuthHandshake({ authOrigin })
-  const who = handshake.userEmail ?? handshake.userId ?? '(unknown user)'
-  console.log(`[myth] ✓ Signed in as ${who}`)
+  // 2. No-op check: compare against what the target URL CURRENTLY serves
+  // (extracted from the outer page's content-addressed inner origin). Mere
+  // CAS membership would wrongly no-op a revert; only an exact served-tree
+  // match skips. Skipping mints no commit, so commit dates stay meaningful.
+  if (!opts.force) {
+    const targetUrl = opts.apex
+      ? `https://${zoneSuffix}/`
+      : shortName
+        ? `https://${shortName}.${zoneSuffix}/`
+        : null
+    if (targetUrl) {
+      const served = await servedTreeLabel(targetUrl)
+      if (served !== null && served === hexToCrockford256(built.rootTree)) {
+        console.log(`[myth] ${targetUrl} already serves this exact content — nothing to publish.`)
+        console.log('[myth] Pass --force to publish anyway (fresh commit, recompile/rescan).')
+        return
+      }
+    }
+  }
+
+  // 3. Auth (MYTH_SESSION_TOKEN env → ~/.config/myth cache → browser).
+  const session = await acquireSessionToken(authOrigin)
+  console.log(`[myth] ✓ Signed in as ${session.who}`)
 
   // 3. Check. The worker derives the GC scope server-side from the
   // authenticated user + rootTree + shortName; we only send those inputs.
@@ -156,7 +261,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   console.log(`[myth] Checking blob storage (${allHashes.length} objects)...`)
   const missing = await checkBlobs(allHashes, {
     apiUrl,
-    sessionToken: handshake.sessionToken,
+    sessionToken: session.token,
     rootTree: built.rootTree,
     shortName,
   })
@@ -177,7 +282,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     progress.update(0, missing.length)
     await uploadBlobs(toUpload, {
       apiUrl,
-      sessionToken: handshake.sessionToken,
+      sessionToken: session.token,
       rootTree: built.rootTree,
       shortName,
       onProgress: e => {
@@ -193,15 +298,18 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   console.log('[myth] Finalizing...')
   const result = await finalizePublish(built.headCommit, {
     apiUrl,
-    sessionToken: handshake.sessionToken,
+    sessionToken: session.token,
     rootTree: built.rootTree,
     shortName,
+    apex: opts.apex,
   })
   console.log('[myth] ✓ Published. (Live for you now; public once the safety scan passes.)')
-  const zoneSuffix = inferZoneSuffix(apiUrl)
   console.log(`[myth]   Canonical: https://${result.canonical}.${zoneSuffix}`)
   if (result.alias) {
     console.log(`[myth]   Alias:     https://${result.alias}.${zoneSuffix}`)
+  }
+  if (result.apex) {
+    console.log(`[myth]   Apex:      https://${zoneSuffix}  (default app set)`)
   }
   for (const w of result.warnings) {
     console.log(`[myth] ⚠ ${w}`)

@@ -48,6 +48,12 @@ export interface PublishClientOptions {
    * for canonical-only publishes (the worker uses `_canonical`).
    */
   shortName?: string
+  /**
+   * Set this publish as the zone's apex default app (the reserved `~apex`
+   * pointer; https://{zone}/). Owner-gated server-side: the session's
+   * userId must equal the deployed APEX_OWNER_USER_ID or /publish 403s.
+   */
+  apex?: boolean
   /** Optional progress callback for upload UI. */
   onProgress?: (event: ProgressEvent) => void
   /** Override the fetch implementation (tests). */
@@ -68,6 +74,8 @@ export interface FinalizeResult {
   canonical: string
   /** Alias short-name if shortName was provided. null otherwise. */
   alias: string | null
+  /** True when the worker also set this publish as the apex default. */
+  apex: boolean
   /** Non-fatal advisories from the edge compile (e.g. host-version overrides). */
   warnings: string[]
 }
@@ -237,8 +245,9 @@ export async function finalizePublish(
   opts: PublishClientOptions,
 ): Promise<FinalizeResult> {
   const fetchImpl = opts.fetch ?? fetch
-  const body: Record<string, string> = { headCommit }
+  const body: Record<string, string | boolean> = { headCommit }
   if (opts.shortName) body.shortName = opts.shortName
+  if (opts.apex) body.apex = true
   const res = await fetchImpl(`${opts.apiUrl}/publish`, {
     method: 'POST',
     headers: {
@@ -268,6 +277,7 @@ export async function finalizePublish(
     tree: parsed.tree,
     canonical: parsed.canonical,
     alias: typeof parsed.alias === 'string' ? parsed.alias : null,
+    apex: (parsed as { apex?: unknown }).apex === true,
     warnings: Array.isArray((parsed as { warnings?: unknown }).warnings)
       ? ((parsed as { warnings?: unknown }).warnings as unknown[]).filter(
           (w): w is string => typeof w === 'string',
