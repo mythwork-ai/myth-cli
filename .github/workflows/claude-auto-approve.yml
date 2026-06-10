@@ -129,7 +129,7 @@ jobs:
           conf=$(printf '%s' "$verdict" | jq -r '.confidence')
           summary=$(printf '%s' "$verdict" | jq -r '.summary')
           nblock=$(printf '%s' "$verdict" | jq -r '.blocking_issues | length')
-          meets=$(awk -v c="$conf" 'BEGIN{print (c>=0.9)?"yes":"no"}')
+          meets=$(awk -v c="$conf" 'BEGIN{print (c+0>=0.9)?"yes":"no"}')
 
           echo "stop=$stop approve=$approve confidence=$conf blocking=$nblock truncated=$truncated meets=$meets"
 
