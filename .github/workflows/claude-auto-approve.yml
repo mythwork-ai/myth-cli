@@ -1,0 +1,146 @@
+name: Claude Auto-Approve
+
+# Submits an APPROVING review when Claude is ≥90% confident the change is good,
+# satisfying the branch's "1 approving review" rule without a human. Withholds
+# (posts a COMMENT review instead) on lower confidence, any blocking issue, a
+# refusal/truncation, or a diff too large to fully read — all fail-closed, so
+# the worst case is "no approval, human must review", never a bad auto-approve.
+#
+# This complements claude-review.yml (which posts a line-by-line review
+# comment) — this workflow only decides approve / don't-approve.
+#
+# How the approval counts: the review is submitted by github-actions[bot] via
+# GITHUB_TOKEN. That requires the org + repo setting "Allow GitHub Actions to
+# create and approve pull requests" (enabled). dismiss_stale_reviews_on_push
+# is on for the branch, so each new push dismisses the prior approval and this
+# workflow re-evaluates the new commits.
+#
+# A human still clicks Merge — this only removes the second-reviewer
+# bottleneck for a solo maintainer; it does not auto-merge.
+#
+# Required secret: ANTHROPIC_API_KEY (same one claude-review.yml uses).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Only needs to read the diff and submit a review.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: claude-auto-approve-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-approve:
+    runs-on: ubuntu-latest
+    # Skip forks (no secret, read-only token) and drafts.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - name: Evaluate and (maybe) approve
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "ANTHROPIC_API_KEY not set — skipping."; exit 0
+          fi
+
+          # --- Never auto-approve changes to CI itself ---
+          # A same-repo PR runs the workflow from its OWN head, so a PR that
+          # edits this gate (lower the threshold, always-approve) would run the
+          # edited version and self-approve. Anything under .github/ must get a
+          # human approval; the gate refuses to vouch for its own automation.
+          if gh pr diff "$PR" --repo "$REPO" --name-only | grep -qE '^\.github/'; then
+            gh pr review "$PR" --repo "$REPO" --comment --body \
+              "🔒 **Claude auto-approve skipped** — this PR changes \`.github/\` (CI/automation). Changes to the automation that gates merges require a human approving review."
+            echo "PR touches .github/ — refusing to auto-approve CI changes."; exit 0
+          fi
+
+          # --- Gather the diff (cap to bound cost; oversize → fail-closed) ---
+          gh pr diff "$PR" --repo "$REPO" > diff.txt || true
+          if [ ! -s diff.txt ]; then echo "Empty diff — not approving."; exit 0; fi
+          truncated=false
+          if [ "$(wc -c < diff.txt)" -gt 200000 ]; then
+            head -c 200000 diff.txt > diff.cap && mv diff.cap diff.txt
+            truncated=true
+          fi
+
+          # --- Build the request (jq embeds the diff safely via --rawfile) ---
+          {
+            printf 'PR title: %s\n' "$TITLE"
+            printf 'Diff was truncated for length: %s\n\n' "$truncated"
+            printf 'Review this pull request diff and decide whether to APPROVE it.\n'
+            printf 'Unified diff follows:\n\n'
+            cat diff.txt
+          } > user.txt
+
+          system='You are a strict release gate for a pull request. Approve ONLY when you are at least 90% confident the change is correct, safe, and complete: no bugs, no security or data-loss risks, no obviously missing tests for the behavior changed, and no half-finished work. When uncertain, do NOT approve. Set approve=false and list every blocking issue. confidence is your probability (0..1) that approving is the right call. Be conservative: it is far better to withhold approval from a good PR than to approve a flawed one.'
+
+          schema='{
+            "type":"object","additionalProperties":false,
+            "properties":{
+              "approve":{"type":"boolean"},
+              "confidence":{"type":"number"},
+              "summary":{"type":"string"},
+              "blocking_issues":{"type":"array","items":{"type":"string"}}
+            },
+            "required":["approve","confidence","summary","blocking_issues"]
+          }'
+
+          jq -n --rawfile u user.txt --arg sys "$system" --argjson schema "$schema" '{
+            model: "claude-opus-4-8",
+            max_tokens: 1024,
+            system: $sys,
+            messages: [{role: "user", content: $u}],
+            output_config: {format: {type: "json_schema", schema: $schema}}
+          }' > req.json
+
+          # --- Call Claude (capture HTTP status; non-2xx → fail-closed + loud) ---
+          code=$(curl -sS -o resp.json -w '%{http_code}' https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            --data @req.json)
+          if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+            echo "Anthropic API returned HTTP $code — not approving. Body:"; head -c 1024 resp.json; exit 0
+          fi
+
+          stop=$(jq -r '.stop_reason // empty' resp.json)
+          text=$(jq -r '[.content[]? | select(.type=="text") | .text] | join("")' resp.json)
+          if [ -z "$text" ]; then
+            echo "No verdict returned (stop=$stop). First 1KB of response:"; head -c 1024 resp.json; exit 0
+          fi
+
+          verdict=$(printf '%s' "$text" | jq -c . 2>/dev/null || true)
+          if [ -z "$verdict" ]; then echo "Verdict was not valid JSON:"; printf '%s\n' "$text"; exit 0; fi
+
+          approve=$(printf '%s' "$verdict" | jq -r '.approve')
+          conf=$(printf '%s' "$verdict" | jq -r '.confidence')
+          summary=$(printf '%s' "$verdict" | jq -r '.summary')
+          nblock=$(printf '%s' "$verdict" | jq -r '.blocking_issues | length')
+          meets=$(awk -v c="$conf" 'BEGIN{print (c>=0.9)?"yes":"no"}')
+
+          echo "stop=$stop approve=$approve confidence=$conf blocking=$nblock truncated=$truncated meets=$meets"
+
+          if [ "$stop" = "end_turn" ] && [ "$approve" = "true" ] && [ "$meets" = "yes" ] \
+             && [ "$nblock" = "0" ] && [ "$truncated" = "false" ]; then
+            body=$(printf '✅ **Claude auto-approve** — confidence %s\n\n%s\n\n_Automated gate: approves only at ≥0.90 confidence with no blocking issues. A human still merges._' "$conf" "$summary")
+            gh pr review "$PR" --repo "$REPO" --approve --body "$body"
+            echo "Approved."
+          else
+            issues=$(printf '%s' "$verdict" | jq -r 'if (.blocking_issues|length)>0 then (.blocking_issues|map("- "+.)|join("\n")) else "" end')
+            body=$(printf '🔍 **Claude auto-approve withheld** — confidence %s, approve=%s, truncated=%s\n\n%s\n\n%s\n\n_A reviewing approval is still required to merge._' "$conf" "$approve" "$truncated" "$summary" "$issues")
+            gh pr review "$PR" --repo "$REPO" --comment --body "$body"
+            echo "Withheld."
+          fi
