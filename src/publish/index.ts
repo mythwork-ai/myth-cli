@@ -220,8 +220,16 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
       )
     } else {
       console.log(`[myth] Tailwind detected — pre-baking ${entryCss}...`)
-      const baked = prebakeTailwind(root, entryCss)
-      overrides = new Map([[baked.generatedCssPath, new TextEncoder().encode(baked.css)]])
+      try {
+        const baked = prebakeTailwind(root, entryCss)
+        overrides = new Map([[baked.generatedCssPath, new TextEncoder().encode(baked.css)]])
+      } catch (e) {
+        // Non-fatal: the platform compiles Tailwind v4 server-side at serve
+        // time, so a failed local pre-bake (e.g. Tailwind v4 has no `tailwindcss`
+        // CLI binary — it moved to @tailwindcss/cli) must not abort the publish.
+        console.log(`[myth] ⚠ Tailwind pre-bake failed — continuing; the platform compiles Tailwind server-side.`)
+        console.log(`[myth]   (${(e as Error).message.split('\n')[0]})`)
+      }
     }
   }
   const buildStart = Date.now()

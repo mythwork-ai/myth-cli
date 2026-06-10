@@ -24,7 +24,10 @@ import ignore from 'ignore'
 type Matcher = ReturnType<typeof ignore>
 
 /** Excluded wherever they appear in the tree (always junk / never source). */
-const HARD_EXCLUDE_DIRS_ANY = new Set(['node_modules', '.git'])
+// `.claude`/`.worktrees` hold agent session worktrees (full nested checkouts
+// of this or other repos) — never app source, and recursing into them can
+// publish an entire second working tree.
+const HARD_EXCLUDE_DIRS_ANY = new Set(['node_modules', '.git', '.claude', '.worktrees'])
 
 /** Excluded only at the project root (a nested `dist/` may be committed source). */
 const HARD_EXCLUDE_DIRS_ROOT = new Set([
