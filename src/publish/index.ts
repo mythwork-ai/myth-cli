@@ -25,7 +25,6 @@ import { loadConfigOrThrow, OrbitConfigError } from '../virtual-html.js'
 import { assembleSourceAndHash } from './build-objects.js'
 import { selectSourceFiles } from './source-select.js'
 import { validateSource } from './validate.js'
-import { detectTailwind, findTailwindEntry, prebakeTailwind } from './tailwind.js'
 import { runAuthHandshake } from './auth-handshake.js'
 import { hexToCrockford256, servedTreeLabel } from './crockford.js'
 import {
@@ -214,42 +213,18 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   // not validated — an app's own imports come from its dependencies; a peer dep
   // it actually imports should also appear in dependencies.)
   const deps: Record<string, string> = pkg.dependencies ?? {}
-  // Tailwind is usually a devDependency (e.g. @tailwindcss/vite), so detection
-  // must look at both dependency sets.
-  const allDeps: Record<string, string> = { ...(pkg.devDependencies ?? {}), ...deps }
   const files = selectSourceFiles(root)
   const errors = validateSource({ files, deps })
   if (errors.length > 0) {
     throw new OrbitConfigError('Cannot publish — fix these first:\n  - ' + errors.join('\n  - '))
   }
-  // Tailwind pre-bake: compile the entry stylesheet and inject the result into
-  // the upload set as an in-memory override — the user's source is never mutated.
-  let overrides: Map<string, Uint8Array> | undefined
-  if (detectTailwind(allDeps)) {
-    const entryCss = findTailwindEntry(root, files)
-    if (!entryCss) {
-      console.log(
-        '[myth] Tailwind detected, but no CSS entry with `@import "tailwindcss"` ' +
-          'was found — skipping pre-bake.',
-      )
-    } else {
-      console.log(`[myth] Tailwind detected — pre-baking ${entryCss}...`)
-      try {
-        const baked = prebakeTailwind(root, entryCss)
-        overrides = new Map([[baked.generatedCssPath, new TextEncoder().encode(baked.css)]])
-      } catch (e) {
-        // Non-fatal: the platform compiles Tailwind v4 server-side at serve
-        // time, so a failed local pre-bake (e.g. Tailwind v4 has no `tailwindcss`
-        // CLI binary — it moved to @tailwindcss/cli) must not abort the publish.
-        console.log(`[myth] ⚠ Tailwind pre-bake failed — continuing; the platform compiles Tailwind server-side.`)
-        console.log(`[myth]   (${(e as Error).message.split('\n')[0]})`)
-      }
-    }
-  }
+  // No local build of any kind — Tailwind included. The platform compiles
+  // source server-side (Sucrase + Tailwind v4 + esm.sh importmaps), so the
+  // published tree is exactly the source: deterministic hashes, one bake path.
   const buildStart = Date.now()
   console.log('[myth] Packaging source...')
   // Reuse the already-computed file list (avoid a second filesystem walk).
-  const built = await assembleSourceAndHash(root, files, overrides)
+  const built = await assembleSourceAndHash(root, files)
   const buildSec = ((Date.now() - buildStart) / 1000).toFixed(1)
   console.log(
     `[myth] Packaged in ${buildSec}s. ${built.fileCount} files, ` +

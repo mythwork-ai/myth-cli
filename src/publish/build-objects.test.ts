@@ -174,26 +174,6 @@ describe('assembleSourceAndHash', () => {
     expect(res.fileCount).toBe(1)
   })
 
-  it('uses in-memory overrides instead of on-disk contents (Tailwind pre-bake)', async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'myth-asm-'))
-    await writeFile(path.join(root, 'index.css'), '@import "tailwindcss";')
-    const enc = new TextEncoder()
-    const overridden = await assembleSourceAndHash(
-      root,
-      ['index.css'],
-      new Map([['index.css', enc.encode('.baked{}')]]),
-    )
-    const onDisk = await assembleSourceAndHash(root, ['index.css'])
-    // Same path, different bytes → different tree hash, proving the override won.
-    expect(overridden.rootTree).not.toBe(onDisk.rootTree)
-    // And it matches hashing the baked bytes directly.
-    const direct = await assembleSourceAndHash(
-      root,
-      ['index.css'],
-      new Map([['index.css', enc.encode('.baked{}')]]),
-    )
-    expect(overridden.rootTree).toBe(direct.rootTree)
-  })
 })
 
 describe('commit timestamps (assemble path)', () => {

@@ -51,7 +51,7 @@ Your app is **live for you immediately**, and becomes **public once an automated
 - **Standard React + TypeScript** apps (entry auto-detected: `main.tsx` / `index.tsx` / `App.tsx` / `src/*`).
 - **Dependencies** are resolved via [esm.sh](https://esm.sh) at the edge. Most pure-JS npm packages work; **native / build-time packages don't** (e.g. `sharp`, `fsevents`, `canvas`) — `myth publish` will tell you up front if one is unsupported.
 - **CSS**: relative CSS imports (`import './index.css'`) are inlined automatically.
-- **Tailwind**: if detected, the CLI pre-bakes your Tailwind CSS locally before upload. Use **CSS-first config** (`@import "tailwindcss"` + `@theme`); a `tailwind.config.js` is not supported (publish will ask you to migrate it).
+- **Tailwind**: compiled **server-side** by the platform at serve time — the CLI uploads your source untouched. Use **CSS-first config** (`@import "tailwindcss"` + `@theme`); a `tailwind.config.js` is not supported (publish will ask you to migrate it).
 
 By default this publishes to **prod** (`api.myth.work`). Pass `--staging` to publish to `api.llama.space` instead (useful for testing the publish flow without touching prod):
 
