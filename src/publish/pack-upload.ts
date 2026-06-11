@@ -282,6 +282,7 @@ export async function uploadBlobsPacked(
 
   // --- Chunk into packs -----------------------------------------------------
   const { packs: initialPacks, oversized } = chunkIntoPacks(toUpload)
+  const succeededHashes = new Set<string>()
 
   // Oversized objects fall back to per-object PUT immediately.
   if (oversized.length > 0) {
@@ -299,13 +300,15 @@ export async function uploadBlobsPacked(
         }
       },
     })
+    // Mark them landed so a later 404 pack-fallback (which re-uploads
+    // everything not in succeededHashes) doesn't re-PUT and double-count them.
+    for (const obj of oversized) succeededHashes.add(obj.hash)
   }
 
   if (initialPacks.length === 0) return
 
   // --- Upload packs in rounds, retrying partial failures --------------------
   let pendingPacks = initialPacks
-  const succeededHashes = new Set<string>()
 
   for (let round = 0; round <= MAX_PACK_RETRY_ROUNDS; round++) {
     if (pendingPacks.length === 0) break
