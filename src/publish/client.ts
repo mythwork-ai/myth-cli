@@ -92,6 +92,8 @@ export class PublishError extends Error {
     public code:
       | 'session_expired'
       | 'name_taken'
+      | 'not_owner'
+      | 'not_found'
       | 'too_large'
       | 'backend_down'
       | 'bad_bundle'
@@ -361,6 +363,109 @@ export async function mapErrorResponse(
     'unknown',
     `publish worker returned ${status}${serverMsg ? `: ${serverMsg}` : ''}`,
     { status, hash: ctx.hash, shortName: ctx.shortName },
+  )
+}
+
+// ===========================================================================
+// Unpublish: DELETE /publish/site/{name}
+// ===========================================================================
+
+export interface UnpublishClientOptions {
+  /** Worker base URL — e.g. https://api.myth.work or https://api.llama.space. */
+  apiUrl: string
+  /** Session JWT from the auth handshake. */
+  sessionToken: string
+  /** Override the fetch implementation (tests). */
+  fetch?: typeof fetch
+}
+
+/**
+ * DELETE /publish/site/{name}. On success the alias is removed and its
+ * objects are released for GC. Maps 404 → not_found, 403 → not_owner
+ * (not the publisher), 401 → session_expired.
+ */
+export async function deletePublishedSite(
+  name: string,
+  opts: UnpublishClientOptions,
+): Promise<void> {
+  const fetchImpl = opts.fetch ?? fetch
+  const res = await fetchImpl(`${opts.apiUrl}/publish/site/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${opts.sessionToken}`,
+    },
+  })
+  if (res.ok) return
+  throw await mapUnpublishErrorResponse(res, name)
+}
+
+/**
+ * Map a non-2xx DELETE /publish/site/{name} response onto a PublishError.
+ * Error taxonomy mirrors the publish worker spec:
+ *   404 → not_found  (no app with that alias)
+ *   403 → not_owner  (caller is not the publisher/owner)
+ *   401 → session_expired
+ *   400 → bad_bundle (invalid shortName)
+ *   5xx → backend_down
+ */
+async function mapUnpublishErrorResponse(res: Response, name: string): Promise<PublishError> {
+  const status = res.status
+  let serverMsg: string | undefined
+  try {
+    const text = await res.text()
+    if (text) {
+      try {
+        const j = JSON.parse(text) as { error?: unknown }
+        if (typeof j.error === 'string') serverMsg = j.error
+      } catch {
+        serverMsg = text
+      }
+    }
+  } catch {
+    // best-effort
+  }
+
+  if (status === 401) {
+    return new PublishError(
+      'session_expired',
+      `Session expired. Re-run \`myth unpublish --name ${name}\`.`,
+      { status, shortName: name },
+    )
+  }
+  if (status === 403) {
+    return new PublishError(
+      'not_owner',
+      `You are not the publisher of '${name}'.`,
+      { status, shortName: name },
+    )
+  }
+  if (status === 404) {
+    return new PublishError(
+      'not_found',
+      `No app named '${name}' found.`,
+      { status, shortName: name },
+    )
+  }
+  if (status === 400) {
+    return new PublishError(
+      'bad_bundle',
+      serverMsg
+        ? `Invalid name '${name}': ${serverMsg}`
+        : `Invalid name '${name}'.`,
+      { status, shortName: name },
+    )
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return new PublishError(
+      'backend_down',
+      'Backend is having issues. Try again in a minute.',
+      { status, shortName: name },
+    )
+  }
+  return new PublishError(
+    'unknown',
+    `publish worker returned ${status}${serverMsg ? `: ${serverMsg}` : ''}`,
+    { status, shortName: name },
   )
 }
 

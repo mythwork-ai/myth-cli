@@ -22,6 +22,9 @@ async function main() {
     case "publish":
       await publish(args.slice(1));
       break;
+    case "unpublish":
+      await unpublish(args.slice(1));
+      break;
     case "help":
     case "--help":
     case "-h":
@@ -55,6 +58,9 @@ Usage:
                [--api <url>]     Unchanged content no-ops unless --force.
                                  Default backend is prod (api.myth.work);
                                  --staging uses api.llama.space.
+  myth unpublish --name <name>   Remove a published alias and release its
+               [--staging]       refs for GC. --name is REQUIRED. Uses the
+               [--api <url>]     same prod/staging/auth flow as publish.
 
 Examples:
   myth clone reveal              # Clone the reveal example
@@ -66,6 +72,8 @@ Examples:
   myth publish                   # Publish to prod, canonical URL only
   myth publish --name my-app     # Publish with alias my-app.myth.work
   myth publish --name my-app --staging   # Publish to api.llama.space
+  myth unpublish --name my-app           # Remove the my-app alias (prod)
+  myth unpublish --name my-app --staging # Remove the my-app alias (staging)
 `);
 }
 
@@ -183,6 +191,46 @@ async function publish(pubArgs: string[]) {
     if (err instanceof HandshakeTimeoutError) {
       console.error(`[myth] ${err.message}`);
       console.error("[myth] No sign-in received. Re-run `myth publish`.");
+      process.exit(1);
+    }
+    // Fall-through for OrbitConfigError + anything else.
+    console.error(`[myth] ${(err as Error).message ?? err}`);
+    process.exit(1);
+  }
+}
+
+async function unpublish(unpubArgs: string[]) {
+  const name = parseStringFlag(unpubArgs, "--name");
+  if (!name) {
+    console.error("[myth] --name is required for unpublish. Usage: myth unpublish --name <shortName>");
+    process.exit(1);
+  }
+  const apiUrl = parseStringFlag(unpubArgs, "--api");
+  const staging = unpubArgs.includes("--staging");
+  const { unpublishCommand } = await import("../src/publish/unpublish.js");
+  const { PublishError } = await import("../src/publish/client.js");
+  const { HandshakeTimeoutError } = await import("../src/publish/auth-handshake.js");
+  try {
+    await unpublishCommand({
+      cwd: process.cwd(),
+      name,
+      staging,
+      apiUrl,
+    });
+  } catch (err) {
+    if (err instanceof PublishError) {
+      if (err.code === 'not_found') {
+        console.error(`[myth] No app named '${name}'.`);
+      } else if (err.code === 'not_owner') {
+        console.error(`[myth] You are not the publisher of '${name}'.`);
+      } else {
+        console.error(`[myth] ${err.message}`);
+      }
+      process.exit(1);
+    }
+    if (err instanceof HandshakeTimeoutError) {
+      console.error(`[myth] ${err.message}`);
+      console.error("[myth] No sign-in received. Re-run `myth unpublish`.");
       process.exit(1);
     }
     // Fall-through for OrbitConfigError + anything else.
