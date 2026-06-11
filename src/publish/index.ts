@@ -33,6 +33,7 @@ import {
   PublishError,
   uploadBlobs,
 } from './client.js'
+import { uploadBlobsPacked } from './pack-upload.js'
 import { createProgress } from './progress.js'
 
 export interface PublishOptions {
@@ -280,7 +281,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     })
     const progress = createProgress('Uploading', Boolean(process.stdout.isTTY))
     progress.update(0, missing.length)
-    await uploadBlobs(toUpload, {
+    await uploadBlobsPacked(toUpload, {
       apiUrl,
       sessionToken: session.token,
       rootTree: built.rootTree,
