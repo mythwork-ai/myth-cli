@@ -77,6 +77,17 @@ export interface FinalizeResult {
   canonical: string
   /** Alias short-name if shortName was provided. null otherwise. */
   alias: string | null
+  /**
+   * Server-measured finalize phase timings (platform ≥ publish-fastpath).
+   * null when the backend predates the field.
+   */
+  timings: {
+    walkMs: number
+    scanMs: number
+    compileMs: number
+    totalMs: number
+    scanCached: boolean
+  } | null
   /** True when the worker also set this publish as the apex default. */
   apex: boolean
   /** Non-fatal advisories from the edge compile (e.g. host-version overrides). */
@@ -286,6 +297,29 @@ export async function finalizePublish(
           (w): w is string => typeof w === 'string',
         )
       : [],
+    timings: parseTimings((parsed as { timings?: unknown }).timings),
+  }
+}
+
+/** Validate the additive `timings` response field; null on absence/shape drift. */
+function parseTimings(t: unknown): FinalizeResult['timings'] {
+  if (t === null || typeof t !== 'object') return null
+  const o = t as Record<string, unknown>
+  if (
+    typeof o.walkMs !== 'number' ||
+    typeof o.scanMs !== 'number' ||
+    typeof o.compileMs !== 'number' ||
+    typeof o.totalMs !== 'number' ||
+    typeof o.scanCached !== 'boolean'
+  ) {
+    return null
+  }
+  return {
+    walkMs: o.walkMs,
+    scanMs: o.scanMs,
+    compileMs: o.compileMs,
+    totalMs: o.totalMs,
+    scanCached: o.scanCached,
   }
 }
 

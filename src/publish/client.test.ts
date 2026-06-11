@@ -287,6 +287,42 @@ describe('finalizePublish', () => {
     expect(result.warnings).toEqual([])
   })
 
+  it('parses the additive timings field; null when absent or malformed', async () => {
+    const respond = (timings: unknown) =>
+      (async () =>
+        jsonRes({
+          commit: 'a'.repeat(64),
+          tree: 'b'.repeat(64),
+          canonical: 'cccc'.repeat(13),
+          alias: null,
+          ...(timings === undefined ? {} : { timings }),
+        })) as unknown as typeof fetch
+    const base = { apiUrl: API, sessionToken: TOKEN, rootTree: ROOT_TREE }
+
+    const good = await finalizePublish('a'.repeat(64), {
+      ...base,
+      fetch: respond({ walkMs: 800, scanMs: 0, compileMs: 1100, totalMs: 1950, scanCached: true }),
+    })
+    expect(good.timings).toEqual({
+      walkMs: 800,
+      scanMs: 0,
+      compileMs: 1100,
+      totalMs: 1950,
+      scanCached: true,
+    })
+
+    // Backend predating the field → null.
+    const absent = await finalizePublish('a'.repeat(64), { ...base, fetch: respond(undefined) })
+    expect(absent.timings).toBeNull()
+
+    // Shape drift → null, never a throw.
+    const malformed = await finalizePublish('a'.repeat(64), {
+      ...base,
+      fetch: respond({ walkMs: 'fast', scanCached: 1 }),
+    })
+    expect(malformed.timings).toBeNull()
+  })
+
   it('parses non-fatal warnings from the response', async () => {
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       expect(String(url)).toBe(`${API}/publish`)
