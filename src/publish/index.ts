@@ -143,7 +143,7 @@ export async function writeSessionCache(
  * cached token that isn't within 5 minutes of expiry; else the browser
  * handshake, whose token is cached for next time.
  */
-async function acquireSessionToken(authOrigin: string): Promise<{
+export async function acquireSessionToken(authOrigin: string): Promise<{
   token: string
   who: string
 }> {
