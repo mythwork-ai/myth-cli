@@ -304,6 +304,13 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     shortName,
     apex: opts.apex,
   })
+  if (result.timings) {
+    const t = result.timings
+    const scan = t.scanCached ? 'scan cached' : `scan ${(t.scanMs / 1000).toFixed(1)}s`
+    console.log(
+      `[myth] Finalized in ${(t.totalMs / 1000).toFixed(1)}s (walk ${(t.walkMs / 1000).toFixed(1)}s · ${scan} · compile ${(t.compileMs / 1000).toFixed(1)}s)`,
+    )
+  }
   console.log('[myth] ✓ Published. (Live for you now; public once the safety scan passes.)')
   console.log(`[myth]   Canonical: https://${result.canonical}.${zoneSuffix}`)
   if (result.alias) {
