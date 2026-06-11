@@ -18,6 +18,7 @@ import {
   checkBlobs,
   finalizePublish,
   mapErrorResponse,
+  MAX_PARALLEL_UPLOADS,
   PublishError,
   uploadBlobs,
 } from './client.js'
@@ -155,6 +156,42 @@ describe('uploadBlobs', () => {
       fetch: fakeFetch,
     })
     expect(sawShortName).toBe(false)
+  })
+
+  it('saturates the pool at MAX_PARALLEL_UPLOADS and completes every blob', async () => {
+    const total = MAX_PARALLEL_UPLOADS * 2 + 3
+    let inFlight = 0
+    let maxInFlight = 0
+    const gate: (() => void)[] = []
+    const fakeFetch = vi.fn(async () => {
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise<void>(resolve => gate.push(resolve))
+      inFlight--
+      return new Response(null, { status: 200 })
+    }) as unknown as typeof fetch
+
+    const blobs = Array.from({ length: total }, (_, i) =>
+      fakeBlob(i.toString(16).padStart(64, '0')),
+    )
+    const done = uploadBlobs(blobs, {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      rootTree: ROOT_TREE,
+      fetch: fakeFetch,
+    })
+    // Releasing each held PUT lets the pool admit the next blob; the gate
+    // drains as fast as the pool refills until all uploads complete.
+    const drain = setInterval(() => {
+      for (const resolve of gate.splice(0)) resolve()
+    }, 0)
+    try {
+      await done
+    } finally {
+      clearInterval(drain)
+    }
+    expect(fakeFetch).toHaveBeenCalledTimes(total)
+    expect(maxInFlight).toBe(MAX_PARALLEL_UPLOADS)
   })
 
   it('retries on 503 and succeeds on second attempt', async () => {

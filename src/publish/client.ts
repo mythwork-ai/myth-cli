@@ -28,7 +28,10 @@
 
 import type { BuiltObject } from './build-objects.js'
 
-const MAX_PARALLEL_UPLOADS = 6
+// 16-way: each PUT is an independent worker invocation server-side, so the
+// practical bound is client sockets, not the platform. 6 left ~2.6x upload
+// wall-clock on the table for a typical ~140-object publish.
+export const MAX_PARALLEL_UPLOADS = 16
 const PUT_RETRY_DELAYS_MS = [250, 500, 1000]
 
 export interface PublishClientOptions {
