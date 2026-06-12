@@ -86,16 +86,24 @@ minutes before expiry) → browser handshake (then cached for next time).
 
 ## Config
 
-`myth run` and `myth publish` walk up from `cwd` looking for `myth.config.json`. Create one with:
+`myth run` and `myth publish` walk up from `cwd` looking for `myth.config.json`. The committed config is identity only:
 
 ```json
 {
-  "projectId": "<17-char pid>",
   "name": "<app name>"
 }
 ```
 
-`myth init` creates this for you (derives a stable local `projectId` from the directory).
+`myth init` creates this for you. The `projectId` is **not** committed — it is
+per-(user, stage) derived state. On publish the CLI resolves it via an
+idempotent provision call keyed by `(owner, name)`, so the same user converges
+on the same project every time without any local state to drift or to 403 a
+teammate.
+
+Adding a `"projectId"` is therefore optional and means something specific: an
+explicit **team-shared pin** — "publish to exactly this project" (membership
+required). If you pin a project you're not a member of, publish falls back to
+your own project (and warns) rather than failing.
 
 ## Commands
 
