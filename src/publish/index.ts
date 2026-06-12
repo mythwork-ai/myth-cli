@@ -199,7 +199,9 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
 
   const { apiUrl, authOrigin } = resolveBackend(opts)
   const zoneSuffix = inferZoneSuffix(apiUrl)
-  console.log(`[myth] Project: ${config.name} (${config.projectId})`)
+  console.log(
+    `[myth] Project: ${config.name}${config.projectId ? ` (pinned ${config.projectId})` : ''}`,
+  )
   console.log(`[myth] Backend: ${apiUrl}${opts.apex ? ' (apex default)' : ''}`)
 
   // 1. Validate + assemble source (no local build — the edge compiles).
@@ -297,7 +299,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     progress.finish()
   }
 
-  // 5. Finalize.
+  // 5. Resolve the target project, then finalize.
   const finalizeBase = {
     apiUrl,
     sessionToken: session.token,
@@ -305,57 +307,53 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     shortName,
     apex: opts.apex,
   }
+  const localId = slugifyLocalId(config.name)
 
-  // AGE-78: a name-only config (no projectId — the `myth init` default) means
-  // this app was never provisioned. Provision PROACTIVELY before finalize and
-  // persist the canonical id, so the first publish "just works" without even a
-  // round-trip through the 403. A config that DOES carry a projectId instead
-  // takes the reactive AGE-67 path below if it turns out not to be owned.
-  let effectiveProjectId = config.projectId
-  if (!effectiveProjectId) {
-    console.log(`[myth] First publish — provisioning a project for '${config.name}'...`)
-    effectiveProjectId = await provisionProject({
-      apiUrl,
-      sessionToken: session.token,
-      localId: slugifyLocalId(config.name),
-      projectName: config.name,
-    })
-    await writeProjectIdToConfig(root, effectiveProjectId)
-    console.log(`[myth] ✓ Provisioned ${effectiveProjectId} and wrote it to myth.config.json.`)
-  }
-
-  // On a projectId-ownership 403 (AGE-67), auto-provision the caller's OWN
-  // project for this app and retry once — then persist the canonical id so the
-  // next publish goes straight through. Idempotent by (owner, localId), so it
-  // yields the user's own project rather than bypassing the gate; printed, not
-  // silent.
-  console.log('[myth] Finalizing...')
+  // AGE-81: the projectId is per-(user, stage) DERIVED state — never committed.
+  // Committing it dirties the tree and 403s every OTHER user/stage (the exact
+  // failure the AGE-55→67 chain kept hitting).
+  //
+  //  - Name-only config (the normal case): resolve the project at publish via
+  //    the idempotent POST /project/provision. The provision call IS the lookup
+  //    — (owner, slug) ⇒ the SAME pid every time (~100ms) — so there is no
+  //    write-back, no sidecar, no state to drift. Two users publishing the same
+  //    app name each converge on their own project per stage.
+  //  - projectId PRESENT: an explicit TEAM-SHARED pin — "publish to exactly
+  //    this project, membership required." Try it directly; on a not-owner 403
+  //    the caller isn't a member, so fall back to their OWN project (same
+  //    idempotent provision) and WARN — rather than silently burying the
+  //    committed pin or writing over it.
   let result: FinalizeResult
-  try {
-    result = await finalizePublish(built.headCommit, {
-      ...finalizeBase,
-      projectId: effectiveProjectId,
-    })
-  } catch (e) {
-    if (!(e instanceof PublishError) || e.code !== 'not_owner') throw e
-    const localId = slugifyLocalId(config.name)
-    console.log(
-      `[myth] projectId '${config.projectId}' isn't yours — provisioning your own project for '${config.name}'...`,
-    )
-    const provisionedId = await provisionProject({
+  if (config.projectId) {
+    console.log('[myth] Finalizing...')
+    try {
+      result = await finalizePublish(built.headCommit, {
+        ...finalizeBase,
+        projectId: config.projectId,
+      })
+    } catch (e) {
+      if (!(e instanceof PublishError) || e.code !== 'not_owner') throw e
+      console.log(
+        `[myth] ⚠ Pinned projectId '${config.projectId}' isn't yours to publish to — ` +
+          `using your own project for '${config.name}' instead.`,
+      )
+      const ownId = await provisionProject({
+        apiUrl,
+        sessionToken: session.token,
+        localId,
+        projectName: config.name,
+      })
+      result = await finalizePublish(built.headCommit, { ...finalizeBase, projectId: ownId })
+    }
+  } else {
+    const projectId = await provisionProject({
       apiUrl,
       sessionToken: session.token,
       localId,
       projectName: config.name,
     })
-    await writeProjectIdToConfig(root, provisionedId)
-    console.log(
-      `[myth] ✓ Provisioned ${provisionedId} and updated myth.config.json (was ${config.projectId}).`,
-    )
-    result = await finalizePublish(built.headCommit, {
-      ...finalizeBase,
-      projectId: provisionedId,
-    })
+    console.log('[myth] Finalizing...')
+    result = await finalizePublish(built.headCommit, { ...finalizeBase, projectId })
   }
   if (result.timings) {
     const t = result.timings
@@ -454,28 +452,4 @@ export function slugifyLocalId(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
   return slug || 'app'
-}
-
-/**
- * Persist the canonical projectId back into myth.config.json (AGE-67),
- * preserving the file's other fields. Pretty-printed with a trailing newline.
- *
- * BEST-EFFORT (AGE-78 review guard): a failed write (read-only checkout, races)
- * must NOT sink an already-successful provision — we warn and continue, since
- * the pid is valid for THIS publish and the next publish re-provisions the
- * same id idempotently (keyed by owner+localId). Throwing here would strand a
- * server-side provision behind a local fs error.
- */
-async function writeProjectIdToConfig(root: string, projectId: string): Promise<void> {
-  const configPath = path.join(root, 'myth.config.json')
-  try {
-    const parsed = JSON.parse(await readFile(configPath, 'utf-8')) as Record<string, unknown>
-    parsed.projectId = projectId
-    await writeFile(configPath, `${JSON.stringify(parsed, null, 2)}\n`, 'utf-8')
-  } catch (e) {
-    console.log(
-      `[myth] ⚠ Could not write projectId to myth.config.json (${(e as Error).message}); ` +
-        `add "projectId": "${projectId}" manually to skip re-provisioning next time.`,
-    )
-  }
 }
