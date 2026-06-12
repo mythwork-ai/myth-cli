@@ -57,6 +57,13 @@ export interface PublishClientOptions {
    * userId must equal the deployed APEX_OWNER_USER_ID or /publish 403s.
    */
   apex?: boolean
+  /**
+   * Canonical project id from myth.config.json. Sent on finalize so the
+   * worker keys the published app to its project (explore discovery,
+   * app-index events) and verifies ownership against the caller's D1
+   * `project_members` role — a write role passes, anything else 403s.
+   */
+  projectId?: string
   /** Optional progress callback for upload UI. */
   onProgress?: (event: ProgressEvent) => void
   /** Override the fetch implementation (tests). */
@@ -264,6 +271,7 @@ export async function finalizePublish(
   const body: Record<string, string | boolean> = { headCommit }
   if (opts.shortName) body.shortName = opts.shortName
   if (opts.apex) body.apex = true
+  if (opts.projectId) body.projectId = opts.projectId
   const res = await fetchImpl(`${opts.apiUrl}/publish`, {
     method: 'POST',
     headers: {
@@ -362,6 +370,17 @@ export async function mapErrorResponse(
     )
   }
   if (status === 403) {
+    // The worker 403s for two distinct reasons on /publish: an alias owned by
+    // another user, or a projectId the session lacks a write role on. The
+    // server message is the discriminator.
+    if (serverMsg?.includes('projectId')) {
+      return new PublishError(
+        'not_owner',
+        'This project belongs to another user (projectId ownership check failed). ' +
+          'Check the "projectId" in myth.config.json.',
+        { status, shortName: ctx.shortName },
+      )
+    }
     return new PublishError(
       'name_taken',
       ctx.shortName

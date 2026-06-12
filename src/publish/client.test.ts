@@ -287,6 +287,66 @@ describe('finalizePublish', () => {
     expect(result.warnings).toEqual([])
   })
 
+  it('sends projectId when provided; omits the key entirely when absent', async () => {
+    let sawBody: Record<string, unknown> = {}
+    const fakeFetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      sawBody = JSON.parse(String(init?.body))
+      return jsonRes({
+        commit: 'a'.repeat(64),
+        tree: 'b'.repeat(64),
+        canonical: 'cccc'.repeat(13),
+        alias: null,
+      })
+    }) as unknown as typeof fetch
+    const base = { apiUrl: API, sessionToken: TOKEN, rootTree: ROOT_TREE, fetch: fakeFetch }
+
+    await finalizePublish('a'.repeat(64), { ...base, projectId: 'p1234567890abcdef' })
+    expect(sawBody.projectId).toBe('p1234567890abcdef')
+
+    await finalizePublish('a'.repeat(64), base)
+    expect('projectId' in sawBody).toBe(false)
+  })
+
+  it('maps a projectId-ownership 403 to not_owner with a config-pointing message', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'projectId ownership mismatch' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ) as unknown as typeof fetch
+    await expect(
+      finalizePublish('a'.repeat(64), {
+        apiUrl: API,
+        sessionToken: TOKEN,
+        rootTree: ROOT_TREE,
+        shortName: 'myapp',
+        projectId: 'p1234567890abcdef',
+        fetch: fakeFetch,
+      }),
+    ).rejects.toMatchObject({
+      code: 'not_owner',
+      message: expect.stringContaining('myth.config.json'),
+    })
+  })
+
+  it('still maps an alias 403 (no projectId in server message) to name_taken', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'shortName is owned by another user' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ) as unknown as typeof fetch
+    await expect(
+      finalizePublish('a'.repeat(64), {
+        apiUrl: API,
+        sessionToken: TOKEN,
+        rootTree: ROOT_TREE,
+        shortName: 'myapp',
+        fetch: fakeFetch,
+      }),
+    ).rejects.toMatchObject({ code: 'name_taken' })
+  })
+
   it('parses the additive timings field; null when absent or malformed', async () => {
     const respond = (timings: unknown) =>
       (async () =>

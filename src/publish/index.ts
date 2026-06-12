@@ -303,6 +303,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     rootTree: built.rootTree,
     shortName,
     apex: opts.apex,
+    projectId: config.projectId,
   })
   if (result.timings) {
     const t = result.timings
