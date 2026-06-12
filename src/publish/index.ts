@@ -297,12 +297,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     progress.finish()
   }
 
-  // 5. Finalize. On a projectId-ownership 403 (AGE-67), auto-provision the
-  // caller's OWN project for this app and retry once — then persist the
-  // canonical id back to myth.config.json so the next publish goes straight
-  // through. Idempotent by (owner, localId), so this yields the user's own
-  // project rather than bypassing the gate; the swap is printed, not silent.
-  console.log('[myth] Finalizing...')
+  // 5. Finalize.
   const finalizeBase = {
     apiUrl,
     sessionToken: session.token,
@@ -310,11 +305,36 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     shortName,
     apex: opts.apex,
   }
+
+  // AGE-78: a name-only config (no projectId — the `myth init` default) means
+  // this app was never provisioned. Provision PROACTIVELY before finalize and
+  // persist the canonical id, so the first publish "just works" without even a
+  // round-trip through the 403. A config that DOES carry a projectId instead
+  // takes the reactive AGE-67 path below if it turns out not to be owned.
+  let effectiveProjectId = config.projectId
+  if (!effectiveProjectId) {
+    console.log(`[myth] First publish — provisioning a project for '${config.name}'...`)
+    effectiveProjectId = await provisionProject({
+      apiUrl,
+      sessionToken: session.token,
+      localId: slugifyLocalId(config.name),
+      projectName: config.name,
+    })
+    await writeProjectIdToConfig(root, effectiveProjectId)
+    console.log(`[myth] ✓ Provisioned ${effectiveProjectId} and wrote it to myth.config.json.`)
+  }
+
+  // On a projectId-ownership 403 (AGE-67), auto-provision the caller's OWN
+  // project for this app and retry once — then persist the canonical id so the
+  // next publish goes straight through. Idempotent by (owner, localId), so it
+  // yields the user's own project rather than bypassing the gate; printed, not
+  // silent.
+  console.log('[myth] Finalizing...')
   let result: FinalizeResult
   try {
     result = await finalizePublish(built.headCommit, {
       ...finalizeBase,
-      projectId: config.projectId,
+      projectId: effectiveProjectId,
     })
   } catch (e) {
     if (!(e instanceof PublishError) || e.code !== 'not_owner') throw e
@@ -352,9 +372,51 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   if (result.apex) {
     console.log(`[myth]   Apex:      https://${zoneSuffix}  (default app set)`)
   }
-  for (const w of result.warnings) {
-    console.log(`[myth] ⚠ ${w}`)
+  printPublishWarnings(result.warnings)
+}
+
+/**
+ * Print finalize warnings, collapsing the host-provided-dep family (AGE-78).
+ * The edge emits one `Ignoring <name>@<range>; this app uses the host-provided
+ * …` warning PER workspace/host-provided dep — 8 near-identical lines for a
+ * monorepo app drowns out anything else. Collapse 3+ of them into one summary
+ * (naming the deps); other warnings still print individually.
+ */
+export function printPublishWarnings(warnings: string[]): void {
+  const hostProvided: string[] = []
+  const other: string[] = []
+  for (const w of warnings) {
+    const name = hostProvidedDepName(w)
+    if (name) hostProvided.push(name)
+    else other.push(w)
   }
+  if (hostProvided.length >= 3) {
+    const shown = hostProvided.slice(0, 3).join(', ')
+    const more = hostProvided.length > 3 ? `, +${hostProvided.length - 3} more` : ''
+    console.log(
+      `[myth] ⚠ ${hostProvided.length} host-provided deps skipped from the importmap (${shown}${more}) — served by the platform runtime, not esm.sh.`,
+    )
+  } else {
+    // 0–2: keep the full per-dep message (low volume, more informative).
+    for (const name of hostProvided) {
+      const full = warnings.find(w => hostProvidedDepName(w) === name)
+      if (full) console.log(`[myth] ⚠ ${full}`)
+    }
+  }
+  for (const w of other) console.log(`[myth] ⚠ ${w}`)
+}
+
+/**
+ * Return the dep name from a host-provided "Ignoring <name>@<range>; this app
+ * uses the host-provided …" warning, or null if it isn't one. Uses the last
+ * `@` so scoped names (`@orbitcode/auth`) survive.
+ */
+function hostProvidedDepName(w: string): string | null {
+  if (!w.startsWith('Ignoring ') || !w.includes('host-provided')) return null
+  const semi = w.indexOf(';')
+  const head = semi === -1 ? w.slice('Ignoring '.length) : w.slice('Ignoring '.length, semi)
+  const at = head.lastIndexOf('@')
+  return at > 0 ? head.slice(0, at) : head
 }
 
 /**
@@ -397,10 +459,23 @@ export function slugifyLocalId(name: string): string {
 /**
  * Persist the canonical projectId back into myth.config.json (AGE-67),
  * preserving the file's other fields. Pretty-printed with a trailing newline.
+ *
+ * BEST-EFFORT (AGE-78 review guard): a failed write (read-only checkout, races)
+ * must NOT sink an already-successful provision — we warn and continue, since
+ * the pid is valid for THIS publish and the next publish re-provisions the
+ * same id idempotently (keyed by owner+localId). Throwing here would strand a
+ * server-side provision behind a local fs error.
  */
 async function writeProjectIdToConfig(root: string, projectId: string): Promise<void> {
   const configPath = path.join(root, 'myth.config.json')
-  const parsed = JSON.parse(await readFile(configPath, 'utf-8')) as Record<string, unknown>
-  parsed.projectId = projectId
-  await writeFile(configPath, `${JSON.stringify(parsed, null, 2)}\n`, 'utf-8')
+  try {
+    const parsed = JSON.parse(await readFile(configPath, 'utf-8')) as Record<string, unknown>
+    parsed.projectId = projectId
+    await writeFile(configPath, `${JSON.stringify(parsed, null, 2)}\n`, 'utf-8')
+  } catch (e) {
+    console.log(
+      `[myth] ⚠ Could not write projectId to myth.config.json (${(e as Error).message}); ` +
+        `add "projectId": "${projectId}" manually to skip re-provisioning next time.`,
+    )
+  }
 }

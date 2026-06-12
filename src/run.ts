@@ -2,7 +2,7 @@ import { createServer } from "vite";
 import type { ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
 import { mythPlugin } from "./myth-plugin.js";
-import { hostFramePlugin, loadConfigOrThrow, OrbitConfigError } from "./virtual-html.js";
+import { generateLocalPid, hostFramePlugin, loadConfigOrThrow, OrbitConfigError } from "./virtual-html.js";
 import { exec } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -151,9 +151,14 @@ export async function startServer(
   const root = loaded.root;
   const entry = resolveEntry(root, requestedEntry);
 
+  // An unprovisioned app (no projectId in config — AGE-78) still needs a pid
+  // for the local kernel; derive a stable ephemeral one (never persisted). A
+  // real publish provisions + writes the canonical id.
+  const devProjectId = config.projectId ?? generateLocalPid(`${config.name}::${root}`);
+
   const plugins: import("vite").PluginOption[] = [
     hostFramePlugin({
-      projectId: config.projectId,
+      projectId: devProjectId,
       projectName: config.name,
       backendOrigin,
       entry,
@@ -213,7 +218,7 @@ export async function startServer(
   await server.listen();
   console.log(`[myth] backend proxy → ${backendOrigin}`);
   console.log(`[myth] collab url   → ${collabUrl}`);
-  console.log(`[myth] project: ${config.name} (${config.projectId})`);
+  console.log(`[myth] project: ${config.name} (${devProjectId}${config.projectId ? "" : " — local, unprovisioned"})`);
   server.printUrls();
 
   const url = server.resolvedUrls?.local[0];

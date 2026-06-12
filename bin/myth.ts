@@ -2,7 +2,6 @@
 
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
 import path from "node:path";
 
 const args = process.argv.slice(2);
@@ -47,8 +46,8 @@ myth - CLI for running and publishing mythwork apps
 
 Usage:
   myth clone <name>              Clone an example from mythwork-ai/<name>
-  myth init                      Create myth.config.json in the current
-                                 directory with a stable local projectId
+  myth init                      Create myth.config.json (name only) in the
+                                 current directory; first publish provisions the id
   myth run [--entry <file>]      Run the current directory as a mythwork app
              [--port <port>]     (default entry: src/main.tsx, src/App.tsx, App.tsx)
   myth publish [--name <name>]   Upload the current app's SOURCE to myth.work;
@@ -77,21 +76,6 @@ Examples:
 `);
 }
 
-/**
- * Derive a stable 17-char lowercase-alphanumeric local projectId from
- * the given seed. Matches the production HMAC-signed pid shape so
- * downstream code (URL matchers, kernel pid validators) accepts it.
- *
- * Local-only: real apps publishing to production should re-mint via
- * the production /provision flow (browser-based Turnstile + DT cookie)
- * and overwrite this value. For local development against either
- * `myth run` or `make tennis-dev`, a stable hash is enough.
- */
-function generateLocalPid(seed: string): string {
-  const hex = createHash("sha256").update(seed).digest("hex");
-  return hex.slice(0, 17).toLowerCase();
-}
-
 async function init() {
   const cwd = process.cwd();
   const configPath = path.join(cwd, "myth.config.json");
@@ -106,26 +90,20 @@ async function init() {
       process.exit(1);
     }
   }
-  if (typeof existing.projectId === "string" && existing.projectId.length > 0) {
-    console.log(
-      `myth.config.json already initialized: projectId=${existing.projectId}`,
-    );
+  if (typeof existing.name === "string" && existing.name.length > 0) {
+    console.log(`myth.config.json already initialized: name=${existing.name}`);
     console.log(`(at ${configPath})`);
     return;
   }
-  const name =
-    typeof existing.name === "string" && existing.name.length > 0
-      ? existing.name
-      : path.basename(cwd);
-  // Seed includes the absolute cwd so two apps named "tennis" in
-  // different directories don't collide on projectId.
-  const projectId = generateLocalPid(`${name}::${cwd}`);
-  const next = { projectId, name, ...existing };
+  const name = path.basename(cwd);
+  // AGE-78: write a NAME-ONLY config — no projectId. `myth run` derives an
+  // ephemeral local pid; the first `myth publish` provisions the real
+  // canonical id and writes it back. The config never carries a fake/doomed id.
+  const next = { name, ...existing };
   writeFileSync(configPath, JSON.stringify(next, null, 2) + "\n");
   console.log(`Created ${configPath}`);
-  console.log(`  projectId: ${projectId}`);
-  console.log(`  name:      ${name}`);
-  console.log(`Run \`myth run\` to start the dev server.`);
+  console.log(`  name: ${name}`);
+  console.log(`Run \`myth run\` to start the dev server, or \`myth publish\` to ship it.`);
 }
 
 async function clone(name: string | undefined) {

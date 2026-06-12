@@ -111,3 +111,76 @@ describe('publishCommand auto-provision-and-retry (AGE-67)', () => {
     expect(cfg.projectId).toBe('notmine0000000000') // untouched
   })
 })
+
+describe('publishCommand first-publish proactive provision + rethrow (AGE-78 / #16 minors)', () => {
+  let root = ''
+  let origToken: string | undefined
+
+  async function scaffold(config: Record<string, unknown>): Promise<void> {
+    root = await mkdtemp(path.join(os.tmpdir(), 'myth-age78-'))
+    await mkdir(path.join(root, 'src'), { recursive: true })
+    await writeFile(path.join(root, 'myth.config.json'), `${JSON.stringify(config, null, 2)}\n`)
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'tennis-demo', dependencies: { react: '^19.0.0', 'react-dom': '^19.0.0' } }),
+    )
+    await writeFile(path.join(root, 'src', 'main.tsx'), "import { createRoot } from 'react-dom/client'\ncreateRoot(document.body).render(null)\n")
+    origToken = process.env.MYTH_SESSION_TOKEN
+    process.env.MYTH_SESSION_TOKEN = 'fake.jwt.token'
+  }
+
+  afterEach(async () => {
+    if (origToken === undefined) delete process.env.MYTH_SESSION_TOKEN
+    else process.env.MYTH_SESSION_TOKEN = origToken
+    vi.unstubAllGlobals()
+    if (root) await rm(root, { recursive: true, force: true })
+  })
+
+  it('name-only config (no projectId) → provisions PROACTIVELY before finalize, no 403 dance', async () => {
+    await scaffold({ name: 'tennis-demo' }) // NO projectId — the myth init default
+    const calls: { url: string; method: string; body: Record<string, unknown> | undefined }[] = []
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url)
+      const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
+      calls.push({ url: u, method: init?.method ?? 'GET', body })
+      if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
+      if (u.endsWith('/project/provision')) return jsonRes({ projectId: 'pPROACTIVE12345', alias: 'tennis-demo-zz', anonymous: false })
+      if (u.endsWith('/publish')) return jsonRes({ commit: 'a'.repeat(64), tree: 'b'.repeat(64), canonical: 'c'.repeat(52), alias: 'tennis-demo' })
+      throw new Error(`unexpected fetch: ${u}`)
+    }) as unknown as typeof fetch
+    vi.stubGlobal('fetch', fakeFetch)
+
+    await publishCommand({ cwd: root, shortName: 'tennis-demo', staging: true, force: true })
+
+    const prov = calls.find(c => c.url.endsWith('/project/provision'))
+    expect(prov?.body).toEqual({ localId: 'tennis-demo', projectName: 'tennis-demo' })
+    const cfg = JSON.parse(await readFile(path.join(root, 'myth.config.json'), 'utf-8')) as { projectId: string }
+    expect(cfg.projectId).toBe('pPROACTIVE12345')
+    // exactly ONE finalize, and it carried the provisioned pid (no 403 round-trip)
+    const finals = calls.filter(c => c.url.endsWith('/publish') && c.method === 'POST')
+    expect(finals).toHaveLength(1)
+    expect(finals[0].body?.projectId).toBe('pPROACTIVE12345')
+  })
+
+  it('rethrows (no loop) when the retry finalize ALSO 403s project_ownership', async () => {
+    await scaffold({ projectId: 'someoneelse00000', name: 'tennis-demo' })
+    let finalizeCount = 0
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url)
+      if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
+      if (u.endsWith('/project/provision')) return jsonRes({ projectId: 'pPROV999', anonymous: false })
+      if (u.endsWith('/publish')) {
+        finalizeCount++
+        return jsonRes({ error: 'projectId ownership mismatch', code: 'project_ownership' }, 403)
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }) as unknown as typeof fetch
+    vi.stubGlobal('fetch', fakeFetch)
+
+    await expect(
+      publishCommand({ cwd: root, shortName: 'tennis-demo', staging: true, force: true }),
+    ).rejects.toMatchObject({ code: 'not_owner' })
+    // provision fired once, finalize attempted exactly twice — NO infinite loop
+    expect(finalizeCount).toBe(2)
+  })
+})

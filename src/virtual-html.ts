@@ -1,5 +1,6 @@
 import type { Plugin } from "vite";
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 const VIRTUAL_ENTRY_ID = "virtual:myth-entry";
@@ -38,7 +39,7 @@ function findConfigRoot(start: string): string | null {
 }
 
 export interface LoadedConfig {
-  config: OrbitConfig & { projectId: string; name: string };
+  config: OrbitConfig & { name: string };
   /** Directory containing the discovered myth.config.json. */
   root: string;
 }
@@ -65,19 +66,27 @@ export function loadConfigOrThrow(start: string): LoadedConfig {
       `myth.config.json in ${root} is not valid JSON: ${(e as Error).message}`,
     );
   }
-  if (!parsed.projectId) {
-    throw new OrbitConfigError(
-      `myth.config.json in ${root} has no "projectId". ${CREATE_HINT}`,
-    );
-  }
+  // projectId is OPTIONAL (AGE-78): `myth init` writes a name-only config and
+  // the first `myth publish` provisions + persists the real canonical id. An
+  // absent projectId means "not yet provisioned" — `myth run` derives an
+  // ephemeral local pid (never persisted) and publish proactively provisions.
   return {
     config: {
       ...parsed,
-      projectId: parsed.projectId,
       name: parsed.name ?? "OrbitCode App",
     },
     root,
   };
+}
+
+/**
+ * Derive a stable 17-char lowercase-alphanumeric local pid from a seed,
+ * matching the production pid shape so URL matchers / kernel validators
+ * accept it. Used by `myth run` for an UNPROVISIONED app's local-only dev
+ * session (never written to disk — publish provisions the real one).
+ */
+export function generateLocalPid(seed: string): string {
+  return createHash("sha256").update(seed).digest("hex").slice(0, 17).toLowerCase();
 }
 
 interface WrapperOptions {
