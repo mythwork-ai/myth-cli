@@ -307,7 +307,25 @@ describe('finalizePublish', () => {
     expect('projectId' in sawBody).toBe(false)
   })
 
-  it('maps a projectId-ownership 403 to not_owner with a config-pointing message', async () => {
+  it('maps a code-keyed project_ownership 403 to not_owner even if the message is reworded', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'you do not own this thing', code: 'project_ownership' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ) as unknown as typeof fetch
+    await expect(
+      finalizePublish('a'.repeat(64), {
+        apiUrl: API,
+        sessionToken: TOKEN,
+        rootTree: ROOT_TREE,
+        projectId: 'p1234567890abcdef',
+        fetch: fakeFetch,
+      }),
+    ).rejects.toMatchObject({ code: 'not_owner' })
+  })
+
+  it('maps a projectId-ownership 403 to not_owner with a config-pointing message (substring fallback)', async () => {
     const fakeFetch = vi.fn(async () =>
       new Response(JSON.stringify({ error: 'projectId ownership mismatch' }), {
         status: 403,

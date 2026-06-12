@@ -348,12 +348,14 @@ export async function mapErrorResponse(
 ): Promise<PublishError> {
   const status = res.status
   let serverMsg: string | undefined
+  let serverCode: string | undefined
   try {
     const text = await res.text()
     if (text) {
       try {
-        const j = JSON.parse(text) as { error?: unknown }
+        const j = JSON.parse(text) as { error?: unknown; code?: unknown }
         if (typeof j.error === 'string') serverMsg = j.error
+        if (typeof j.code === 'string') serverCode = j.code
       } catch {
         serverMsg = text
       }
@@ -372,8 +374,9 @@ export async function mapErrorResponse(
   if (status === 403) {
     // The worker 403s for two distinct reasons on /publish: an alias owned by
     // another user, or a projectId the session lacks a write role on. The
-    // server message is the discriminator.
-    if (serverMsg?.includes('projectId')) {
+    // stable `code` field is the discriminator; the message substring is a
+    // fallback for workers predating it.
+    if (serverCode === 'project_ownership' || serverMsg?.includes('projectId')) {
       return new PublishError(
         'not_owner',
         'This project belongs to another user (projectId ownership check failed). ' +
