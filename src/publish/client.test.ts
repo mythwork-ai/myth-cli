@@ -19,6 +19,7 @@ import {
   finalizePublish,
   mapErrorResponse,
   MAX_PARALLEL_UPLOADS,
+  provisionProject,
   PublishError,
   uploadBlobs,
 } from './client.js'
@@ -488,5 +489,51 @@ describe('mapErrorResponse', () => {
     const e418 = await mapErrorResponse(jsonRes({}, 418), { context: 'check' })
     expect(e418.code).toBe('unknown')
     expect(e418.details?.status).toBe(418)
+  })
+})
+
+describe('provisionProject', () => {
+  it('POSTs /project/provision with Bearer + {localId, projectName} and returns the projectId', async () => {
+    let sawUrl = ''
+    let sawAuth: string | null = null
+    let sawBody: Record<string, unknown> = {}
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      sawUrl = String(url)
+      sawAuth = new Headers(init?.headers).get('Authorization')
+      sawBody = JSON.parse(String(init?.body))
+      return jsonRes({ projectId: 'pNEW1234567890abc', alias: 'tennis-ab12', anonymous: false })
+    }) as unknown as typeof fetch
+    const pid = await provisionProject({
+      apiUrl: API,
+      sessionToken: TOKEN,
+      localId: 'website-tennis',
+      projectName: 'website-tennis',
+      fetch: fakeFetch,
+    })
+    expect(pid).toBe('pNEW1234567890abc')
+    expect(sawUrl).toBe(`${API}/project/provision`)
+    expect(sawAuth).toBe(`Bearer ${TOKEN}`)
+    expect(sawBody).toEqual({ localId: 'website-tennis', projectName: 'website-tennis' })
+  })
+
+  it('maps 401 to session_expired', async () => {
+    const fakeFetch = vi.fn(async () => jsonRes({ error: 'unauthorized' }, 401)) as unknown as typeof fetch
+    await expect(
+      provisionProject({ apiUrl: API, sessionToken: TOKEN, localId: 'x', projectName: 'x', fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'session_expired' })
+  })
+
+  it('maps a non-ok (5xx) to backend_down', async () => {
+    const fakeFetch = vi.fn(async () => jsonRes({ error: 'boom' }, 500)) as unknown as typeof fetch
+    await expect(
+      provisionProject({ apiUrl: API, sessionToken: TOKEN, localId: 'x', projectName: 'x', fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'backend_down' })
+  })
+
+  it('throws unknown when the response carries no projectId', async () => {
+    const fakeFetch = vi.fn(async () => jsonRes({ alias: 'x' })) as unknown as typeof fetch
+    await expect(
+      provisionProject({ apiUrl: API, sessionToken: TOKEN, localId: 'x', projectName: 'x', fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'unknown' })
   })
 })
