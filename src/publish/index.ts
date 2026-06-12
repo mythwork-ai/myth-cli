@@ -29,7 +29,9 @@ import { runAuthHandshake } from './auth-handshake.js'
 import { hexToCrockford256, servedTreeLabel } from './crockford.js'
 import {
   checkBlobs,
+  type FinalizeResult,
   finalizePublish,
+  provisionProject,
   PublishError,
   uploadBlobs,
 } from './client.js'
@@ -295,16 +297,46 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     progress.finish()
   }
 
-  // 5. Finalize.
+  // 5. Finalize. On a projectId-ownership 403 (AGE-67), auto-provision the
+  // caller's OWN project for this app and retry once — then persist the
+  // canonical id back to myth.config.json so the next publish goes straight
+  // through. Idempotent by (owner, localId), so this yields the user's own
+  // project rather than bypassing the gate; the swap is printed, not silent.
   console.log('[myth] Finalizing...')
-  const result = await finalizePublish(built.headCommit, {
+  const finalizeBase = {
     apiUrl,
     sessionToken: session.token,
     rootTree: built.rootTree,
     shortName,
     apex: opts.apex,
-    projectId: config.projectId,
-  })
+  }
+  let result: FinalizeResult
+  try {
+    result = await finalizePublish(built.headCommit, {
+      ...finalizeBase,
+      projectId: config.projectId,
+    })
+  } catch (e) {
+    if (!(e instanceof PublishError) || e.code !== 'not_owner') throw e
+    const localId = slugifyLocalId(config.name)
+    console.log(
+      `[myth] projectId '${config.projectId}' isn't yours — provisioning your own project for '${config.name}'...`,
+    )
+    const provisionedId = await provisionProject({
+      apiUrl,
+      sessionToken: session.token,
+      localId,
+      projectName: config.name,
+    })
+    await writeProjectIdToConfig(root, provisionedId)
+    console.log(
+      `[myth] ✓ Provisioned ${provisionedId} and updated myth.config.json (was ${config.projectId}).`,
+    )
+    result = await finalizePublish(built.headCommit, {
+      ...finalizeBase,
+      projectId: provisionedId,
+    })
+  }
   if (result.timings) {
     const t = result.timings
     const scan = t.scanCached ? 'scan cached' : `scan ${(t.scanMs / 1000).toFixed(1)}s`
@@ -346,4 +378,29 @@ export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * Stable provision key for an app (AGE-67). Idempotent provisioning is keyed
+ * by (owner, localId); deriving it from the config name means repeat publishes
+ * of the same app on a stage converge on ONE project instead of minting
+ * strays. `website-tennis` → `website-tennis`; empty/odd names → `app`.
+ */
+export function slugifyLocalId(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug || 'app'
+}
+
+/**
+ * Persist the canonical projectId back into myth.config.json (AGE-67),
+ * preserving the file's other fields. Pretty-printed with a trailing newline.
+ */
+async function writeProjectIdToConfig(root: string, projectId: string): Promise<void> {
+  const configPath = path.join(root, 'myth.config.json')
+  const parsed = JSON.parse(await readFile(configPath, 'utf-8')) as Record<string, unknown>
+  parsed.projectId = projectId
+  await writeFile(configPath, `${JSON.stringify(parsed, null, 2)}\n`, 'utf-8')
 }

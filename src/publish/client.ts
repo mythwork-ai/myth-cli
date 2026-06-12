@@ -528,3 +528,57 @@ async function mapUnpublishErrorResponse(res: Response, name: string): Promise<P
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
 }
+
+// ===========================================================================
+// Project provisioning (AGE-67)
+// ===========================================================================
+
+export interface ProvisionOptions {
+  apiUrl: string
+  sessionToken: string
+  /** Stable per-(owner) key; re-provisioning the same one returns the SAME
+   *  projectId, so repeat publishes converge on one project (no strays). */
+  localId: string
+  projectName: string
+  fetch?: typeof fetch
+}
+
+/**
+ * Provision (or resolve) the caller's canonical project for `localId`.
+ *
+ * POST /project/provision is idempotent by (owner, localId): it returns the
+ * SAME projectId on every call for a given signed-in user + localId, creating
+ * the row on first use. Because the project is keyed to the CALLER, this can
+ * never hand back another user's project — auto-provision on a publish
+ * ownership 403 therefore yields the user's OWN project, it does not bypass
+ * the ownership gate. Returns the canonical projectId.
+ */
+export async function provisionProject(opts: ProvisionOptions): Promise<string> {
+  const fetchImpl = opts.fetch ?? fetch
+  const res = await fetchImpl(`${opts.apiUrl}/project/provision`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${opts.sessionToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ localId: opts.localId, projectName: opts.projectName }),
+  })
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new PublishError('session_expired', 'Session expired during project provisioning.', {
+        status: res.status,
+      })
+    }
+    const text = await res.text().catch(() => '')
+    throw new PublishError(
+      'backend_down',
+      `Project provisioning failed (${res.status})${text ? `: ${text.slice(0, 200)}` : ''}.`,
+      { status: res.status },
+    )
+  }
+  const parsed = (await res.json().catch(() => null)) as { projectId?: unknown } | null
+  if (!parsed || typeof parsed.projectId !== 'string') {
+    throw new PublishError('unknown', 'Project provisioning returned no projectId.')
+  }
+  return parsed.projectId
+}
