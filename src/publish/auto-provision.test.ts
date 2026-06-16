@@ -197,4 +197,41 @@ describe('publishCommand name-only resolve-via-provision (AGE-81)', () => {
     expect(finals).toHaveLength(1)
     expect(finals[0].body?.projectId).toBe('pRESOLVED12345')
   })
+
+  it('MYTH_PROJECT_ID pins a name-only config → finalize directly, NO provision, config stays name-only (the CI path)', async () => {
+    await scaffold({ name: 'tennis-demo' }) // committed config is name-only
+    const origPid = process.env.MYTH_PROJECT_ID
+    process.env.MYTH_PROJECT_ID = 'envPINnedpid12345' // the per-stage pid the OIDC identity owns
+    try {
+      const calls: { url: string; method: string; body: Record<string, unknown> | undefined }[] = []
+      const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        const u = String(url)
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
+        calls.push({ url: u, method: init?.method ?? 'GET', body })
+        if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
+        if (u.endsWith('/project/provision')) return jsonRes({ projectId: 'shouldNotProvision' })
+        if (u.endsWith('/publish')) return jsonRes({ commit: 'a'.repeat(64), tree: 'b'.repeat(64), canonical: 'c'.repeat(52), alias: 'tennis-demo' })
+        throw new Error(`unexpected fetch: ${u}`)
+      }) as unknown as typeof fetch
+      vi.stubGlobal('fetch', fakeFetch)
+
+      await publishCommand({ cwd: root, shortName: 'tennis-demo', staging: true, force: true })
+
+      // the env pin goes STRAIGHT to finalize — the provision endpoint (which
+      // rejects OIDC) is never touched
+      expect(calls.find(c => c.url.endsWith('/project/provision'))).toBeUndefined()
+      const finals = calls.filter(c => c.url.endsWith('/publish') && c.method === 'POST')
+      expect(finals).toHaveLength(1)
+      expect(finals[0].body?.projectId).toBe('envPINnedpid12345')
+
+      // the committed config is NOT rewritten — it stays name-only
+      const cfg = JSON.parse(await readFile(path.join(root, 'myth.config.json'), 'utf-8')) as {
+        projectId?: string
+      }
+      expect(cfg.projectId).toBeUndefined()
+    } finally {
+      if (origPid === undefined) delete process.env.MYTH_PROJECT_ID
+      else process.env.MYTH_PROJECT_ID = origPid
+    }
+  })
 })

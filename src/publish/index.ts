@@ -90,6 +90,28 @@ export function resolveBackend(opts: {
   return { apiUrl, authOrigin }
 }
 
+/**
+ * The project to publish to when explicitly pinned. `MYTH_PROJECT_ID` (set by
+ * CI per stage — staging and prod own DIFFERENT pids) takes precedence over a
+ * committed `config.projectId`; with neither set the caller is name-only and
+ * the project is resolved via the idempotent provision lookup (AGE-81).
+ *
+ * Keeping the per-stage pin in the ENVIRONMENT — not myth.config.json — lets a
+ * single committed name-only config serve both stages: each workflow exports
+ * the pid its OIDC identity owns, so finalize goes straight to the publish
+ * worker (which accepts the GitHub-OIDC token) rather than the provision
+ * endpoint (which only accepts a session JWT, so OIDC CI would 401 there). A
+ * blank/whitespace `MYTH_PROJECT_ID` is treated as unset.
+ */
+export function resolvePinnedProjectId(
+  config: { projectId?: string },
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const fromEnv = env.MYTH_PROJECT_ID?.trim()
+  if (fromEnv) return fromEnv
+  return config.projectId
+}
+
 
 // ===========================================================================
 // Session-token acquisition: env → cache → browser handshake
@@ -198,9 +220,10 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
       : undefined)
 
   const { apiUrl, authOrigin } = resolveBackend(opts)
+  const pinnedProjectId = resolvePinnedProjectId(config)
   const zoneSuffix = inferZoneSuffix(apiUrl)
   console.log(
-    `[myth] Project: ${config.name}${config.projectId ? ` (pinned ${config.projectId})` : ''}`,
+    `[myth] Project: ${config.name}${pinnedProjectId ? ` (pinned ${pinnedProjectId})` : ''}`,
   )
   console.log(`[myth] Backend: ${apiUrl}${opts.apex ? ' (apex default)' : ''}`)
 
@@ -318,23 +341,24 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   //    — (owner, slug) ⇒ the SAME pid every time (~100ms) — so there is no
   //    write-back, no sidecar, no state to drift. Two users publishing the same
   //    app name each converge on their own project per stage.
-  //  - projectId PRESENT: an explicit TEAM-SHARED pin — "publish to exactly
+  //  - projectId PINNED (env MYTH_PROJECT_ID — wins — or a committed
+  //    config.projectId): an explicit TEAM-SHARED pin — "publish to exactly
   //    this project, membership required." Try it directly; on a not-owner 403
   //    the caller isn't a member, so fall back to their OWN project (same
   //    idempotent provision) and WARN — rather than silently burying the
-  //    committed pin or writing over it.
+  //    pin or writing over it.
   let result: FinalizeResult
-  if (config.projectId) {
+  if (pinnedProjectId) {
     console.log('[myth] Finalizing...')
     try {
       result = await finalizePublish(built.headCommit, {
         ...finalizeBase,
-        projectId: config.projectId,
+        projectId: pinnedProjectId,
       })
     } catch (e) {
       if (!(e instanceof PublishError) || e.code !== 'not_owner') throw e
       console.log(
-        `[myth] ⚠ Pinned projectId '${config.projectId}' isn't yours to publish to — ` +
+        `[myth] ⚠ Pinned projectId '${pinnedProjectId}' isn't yours to publish to — ` +
           `using your own project for '${config.name}' instead.`,
       )
       const ownId = await provisionProject({
