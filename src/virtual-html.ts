@@ -19,19 +19,38 @@ interface OrbitConfig {
 export class OrbitConfigError extends Error {}
 
 const CREATE_HINT =
-  'Create one with: {"projectId":"<17-char pid>","name":"<app name>"}.';
+  'Add a "mythwork" block to package.json (e.g. {"mythwork":{"displayName":"<app name>"}}), ' +
+  'or create a legacy myth.config.json ({"projectId":"<17-char pid>","name":"<app name>"}).';
 
 /**
- * Walk up from `start` looking for myth.config.json. Returns the
- * directory containing it. This is how `myth run` finds the project
- * root regardless of which subdirectory the user invoked from — same
- * pattern as `npm`/`git`/`cargo` walking up to find package.json /
- * .git / Cargo.toml.
+ * AGE-97 content block carried in package.json's "mythwork" field. App trees
+ * moved their project content here when myth.config.json was deleted; only
+ * `displayName` (and an optional `theme`) feed the loader — the per-(user,
+ * stage) projectId stays in the MYTH_PROJECT_ID env, never package.json.
+ */
+interface MythworkBlock {
+  displayName?: string;
+  theme?: string;
+}
+
+/**
+ * Walk up from `start` looking for the project root: the nearest ancestor dir
+ * containing EITHER myth.config.json (legacy/explicit root) OR package.json
+ * (AGE-97 modern root — content lives in its "mythwork" block). When both sit
+ * at the same level the config file wins (resolved in the loader). Same
+ * walk-up discipline as `npm`/`git`/`cargo` finding package.json / .git /
+ * Cargo.toml — this is how `myth run`/`publish` find the project root
+ * regardless of which subdirectory the user invoked from.
  */
 function findConfigRoot(start: string): string | null {
   let dir = path.resolve(start);
   while (true) {
-    if (existsSync(path.join(dir, "myth.config.json"))) return dir;
+    if (
+      existsSync(path.join(dir, "myth.config.json")) ||
+      existsSync(path.join(dir, "package.json"))
+    ) {
+      return dir;
+    }
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -40,42 +59,77 @@ function findConfigRoot(start: string): string | null {
 
 export interface LoadedConfig {
   config: OrbitConfig & { name: string };
-  /** Directory containing the discovered myth.config.json. */
+  /** Directory containing the discovered myth.config.json or package.json. */
   root: string;
 }
 
 /**
- * Load myth.config.json by walking up from `start`. Errors out if
- * the file isn't found anywhere up the tree or `projectId` is absent
- * — myth run only works against a provisioned project (or a stable
- * dev pid the user pasted).
+ * Load the project config by walking up from `start`. Prefers a legacy
+ * myth.config.json (byte-identical to its historical behavior — landing relies
+ * on this); when only package.json is present (AGE-97 deleted the config file
+ * from app trees), the "mythwork" block supplies the same LoadedConfig shape.
+ * Throws only when NEITHER file exists anywhere up the tree.
+ *
+ * projectId stays OPTIONAL either way: `myth publish` resolves the per-(user,
+ * stage) pin from the MYTH_PROJECT_ID env (see resolvePinnedProjectId), and
+ * `myth run` derives an ephemeral local pid when none is set.
  */
 export function loadConfigOrThrow(start: string): LoadedConfig {
   const root = findConfigRoot(start);
   if (root === null) {
     throw new OrbitConfigError(
-      `myth.config.json not found in ${start} or any parent directory. ${CREATE_HINT}`,
+      `No myth project found in ${start} or any parent directory. ${CREATE_HINT}`,
     );
   }
+
+  // Legacy/explicit root: myth.config.json wins when present (unchanged).
   const configPath = path.join(root, "myth.config.json");
-  let parsed: OrbitConfig;
+  if (existsSync(configPath)) {
+    let parsed: OrbitConfig;
+    try {
+      parsed = JSON.parse(readFileSync(configPath, "utf-8"));
+    } catch (e) {
+      throw new OrbitConfigError(
+        `myth.config.json in ${root} is not valid JSON: ${(e as Error).message}`,
+      );
+    }
+    return {
+      config: {
+        ...parsed,
+        name: parsed.name ?? "OrbitCode App",
+      },
+      root,
+    };
+  }
+
+  // AGE-97 modern path: derive content from package.json's "mythwork" block.
+  // projectId/icon/devPort are absent here (projectId comes from the env pin).
+  let pkg: { name?: string; mythwork?: MythworkBlock };
   try {
-    parsed = JSON.parse(readFileSync(configPath, "utf-8"));
+    pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf-8"));
   } catch (e) {
     throw new OrbitConfigError(
-      `myth.config.json in ${root} is not valid JSON: ${(e as Error).message}`,
+      `package.json in ${root} is not valid JSON: ${(e as Error).message}`,
     );
   }
-  // projectId is OPTIONAL (AGE-78): `myth init` writes a name-only config and
-  // the first `myth publish` provisions + persists the real canonical id. An
-  // absent projectId means "not yet provisioned" — `myth run` derives an
-  // ephemeral local pid (never persisted) and publish proactively provisions.
+  const config = configFromPackageJson(pkg);
   return {
-    config: {
-      ...parsed,
-      name: parsed.name ?? "OrbitCode App",
-    },
+    config: { ...config, name: config.name ?? "OrbitCode App" },
     root,
+  };
+}
+
+/**
+ * Map a package.json's AGE-97 "mythwork" block onto an OrbitConfig. The single
+ * source of truth for the package.json fallback, shared by `loadConfigOrThrow`
+ * (publish/run gate) and `readConfigSafe` (dev-server wrapper HTML).
+ */
+function configFromPackageJson(pkg: { name?: string; mythwork?: MythworkBlock }): OrbitConfig {
+  const mythwork = pkg.mythwork ?? {};
+  const theme = mythwork.theme;
+  return {
+    name: mythwork.displayName ?? pkg.name,
+    defaultTheme: theme === "light" || theme === "dark" ? theme : undefined,
   };
 }
 
@@ -325,9 +379,17 @@ export function hostFramePlugin(opts: HostFramePluginOptions): Plugin {
 
 function readConfigSafe(root: string): OrbitConfig {
   const configPath = path.join(root, "myth.config.json");
-  if (!existsSync(configPath)) return {};
+  if (existsSync(configPath)) {
+    try {
+      return JSON.parse(readFileSync(configPath, "utf-8"));
+    } catch {
+      return {};
+    }
+  }
+  // AGE-97: no myth.config.json — fall back to package.json's "mythwork" block
+  // so the dev wrapper still gets the right title/theme.
   try {
-    return JSON.parse(readFileSync(configPath, "utf-8"));
+    return configFromPackageJson(JSON.parse(readFileSync(path.join(root, "package.json"), "utf-8")));
   } catch {
     return {};
   }
