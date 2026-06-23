@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { generateLocalPid, loadConfigOrThrow, OrbitConfigError } from './virtual-html.js'
@@ -27,6 +27,84 @@ describe('loadConfigOrThrow projectId optionality (AGE-78)', () => {
   it('still throws when no config file exists anywhere up the tree', async () => {
     root = await mkdtemp(path.join(os.tmpdir(), 'myth-nocfg-'))
     expect(() => loadConfigOrThrow(root)).toThrow(OrbitConfigError)
+  })
+})
+
+describe('loadConfigOrThrow package.json fallback (AGE-97)', () => {
+  let root = ''
+  afterEach(async () => {
+    if (root) await rm(root, { recursive: true, force: true })
+  })
+
+  it('resolves name+root from package.json mythwork.displayName when no myth.config.json (CI case)', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'myth-pkg-'))
+    await writeFile(
+      path.join(root, 'package.json'),
+      `${JSON.stringify({ name: 'explore', mythwork: { displayName: 'explore' } })}\n`,
+    )
+    const loaded = loadConfigOrThrow(root)
+    expect(loaded.config.name).toBe('explore')
+    expect(loaded.root).toBe(root)
+    // projectId comes from MYTH_PROJECT_ID env via resolvePinnedProjectId — never package.json.
+    expect(loaded.config.projectId).toBeUndefined()
+  })
+
+  it('falls back to pkg.name when mythwork is absent', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'myth-pkg-'))
+    await writeFile(path.join(root, 'package.json'), `${JSON.stringify({ name: 'home' })}\n`)
+    expect(loadConfigOrThrow(root).config.name).toBe('home')
+  })
+
+  it('maps mythwork.theme to defaultTheme only for light|dark', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'myth-pkg-'))
+    await writeFile(
+      path.join(root, 'package.json'),
+      `${JSON.stringify({ name: 'x', mythwork: { displayName: 'X', theme: 'light' } })}\n`,
+    )
+    expect(loadConfigOrThrow(root).config.defaultTheme).toBe('light')
+  })
+
+  it('ignores a non-light/dark mythwork.theme (defaultTheme undefined)', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'myth-pkg-'))
+    await writeFile(
+      path.join(root, 'package.json'),
+      `${JSON.stringify({ name: 'x', mythwork: { displayName: 'X', theme: 'sunset' } })}\n`,
+    )
+    expect(loadConfigOrThrow(root).config.defaultTheme).toBeUndefined()
+  })
+
+  it('myth.config.json wins when BOTH files are present (byte-identical legacy behavior)', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'myth-both-'))
+    await writeFile(
+      path.join(root, 'myth.config.json'),
+      `${JSON.stringify({ name: 'legacy', projectId: 'p123' })}\n`,
+    )
+    await writeFile(
+      path.join(root, 'package.json'),
+      `${JSON.stringify({ name: 'pkgname', mythwork: { displayName: 'pkgdisplay' } })}\n`,
+    )
+    const loaded = loadConfigOrThrow(root)
+    expect(loaded.config.name).toBe('legacy')
+    expect(loaded.config.projectId).toBe('p123')
+  })
+
+  it('nearest myth.config.json wins over an ancestor package.json (legacy root unchanged)', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'myth-walk-'))
+    await writeFile(path.join(root, 'package.json'), `${JSON.stringify({ name: 'monorepo' })}\n`)
+    const appDir = path.join(root, 'app')
+    await mkdir(appDir)
+    await writeFile(path.join(appDir, 'myth.config.json'), `${JSON.stringify({ name: 'tennis' })}\n`)
+    const loaded = loadConfigOrThrow(appDir)
+    expect(loaded.config.name).toBe('tennis')
+    expect(loaded.root).toBe(appDir)
+  })
+
+  it('throws with a message naming BOTH modern package.json and legacy myth.config.json when neither is found', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'myth-neither-'))
+    expect(() => loadConfigOrThrow(root)).toThrow(OrbitConfigError)
+    expect(() => loadConfigOrThrow(root)).toThrow(/package\.json/)
+    expect(() => loadConfigOrThrow(root)).toThrow(/mythwork/)
+    expect(() => loadConfigOrThrow(root)).toThrow(/myth\.config\.json/)
   })
 })
 
