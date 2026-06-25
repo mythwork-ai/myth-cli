@@ -5,6 +5,11 @@
  * back to a per-update newline when piped (so logs stay readable). No
  * ANSI escape sequences beyond `\r` — the spec asks for "boring and
  * pipe-safe".
+ *
+ * `current`/`total` are unitless; pass `formatValue` to label them (e.g.
+ * bytes as "12.3 MB"). Updates can arrive at any granularity — the bar is
+ * driven by the `current/total` ratio, so byte-level updates render a
+ * smoothly-filling bar, not just one jump at the end.
  */
 
 export interface ProgressPrinter {
@@ -12,19 +17,28 @@ export interface ProgressPrinter {
   finish(): void
 }
 
-export function createProgress(label: string, isTty: boolean): ProgressPrinter {
+export function createProgress(
+  label: string,
+  isTty: boolean,
+  formatValue: (n: number) => string = String,
+): ProgressPrinter {
   let lastLen = 0
+  // Piped mode: track the last 10% bucket we logged so a flood of fine-grained
+  // (e.g. byte-level) updates collapses to ~10 lines, not hundreds.
+  let lastBucket = -1
   return {
     update(current, total) {
       if (isTty) {
-        const line = `[myth] ${label} ${renderBar(current, total)} ${current}/${total}`
+        const line = `[myth] ${label} ${renderBar(current, total)} ${formatValue(current)}/${formatValue(total)}`
         process.stdout.write('\r' + line + ' '.repeat(Math.max(0, lastLen - line.length)))
         lastLen = line.length
       } else {
-        // Piped: one line per update would be noisy at 100 files. Emit
-        // every 10% (or at completion) instead.
-        if (current === total || total <= 10 || current % Math.max(1, Math.floor(total / 10)) === 0) {
-          process.stdout.write(`[myth] ${label} ${current}/${total}\n`)
+        // Piped: emit on each 10%-bucket crossing (and at completion) so logs
+        // stay readable regardless of how often update() is called.
+        const bucket = total <= 0 ? 10 : Math.floor((current / total) * 10)
+        if (current >= total || bucket > lastBucket) {
+          lastBucket = bucket
+          process.stdout.write(`[myth] ${label} ${formatValue(current)}/${formatValue(total)}\n`)
         }
       }
     },

@@ -54,16 +54,24 @@ function fakeBlobSized(hash: string, deflatedSize: number): BuiltObject {
   return { hash, type: 'blob', deflated }
 }
 
-/** Decode the body of a pack POST request. */
-async function decodePackBody(init: RequestInit | undefined): Promise<Uint8Array[]> {
+/**
+ * Read a pack POST body to raw bytes. The uploader streams the body as a
+ * ReadableStream (with an explicit Content-Length) so progress can be observed;
+ * draining it here also exercises that streaming path and fires its onChunk
+ * callback, just as undici would on the wire.
+ */
+async function readBody(init: RequestInit | undefined): Promise<Uint8Array> {
   const body = init?.body
   if (!body) throw new Error('no body')
-  // In Node fetch body can be Uint8Array / ArrayBuffer / ReadableStream etc.
-  if (body instanceof Uint8Array) return decodePack(body)
-  if (body instanceof ArrayBuffer) return decodePack(new Uint8Array(body))
-  // Fallback: treat as buffer-like via unknown cast
-  const arr = new Uint8Array(body as unknown as ArrayBuffer)
-  return decodePack(arr)
+  if (body instanceof Uint8Array) return body
+  if (body instanceof ArrayBuffer) return new Uint8Array(body)
+  // ReadableStream (the streaming progress body) or other BodyInit.
+  return new Uint8Array(await new Response(body as BodyInit).arrayBuffer())
+}
+
+/** Decode the body of a pack POST request. */
+async function decodePackBody(init: RequestInit | undefined): Promise<Uint8Array[]> {
+  return decodePack(await readBody(init))
 }
 
 /** Build a success response for a pack of N objects. */
@@ -156,8 +164,8 @@ describe('chunking: size bound', () => {
     ]
     const sentBodySizes: number[] = []
     const fakeFetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-      const entries = await decodePackBody(init)
-      const body = init?.body as Uint8Array
+      const body = await readBody(init)
+      const entries = decodePack(body)
       sentBodySizes.push(body.byteLength)
       // One entry per pack; map back to the object by size match.
       const hashes = entries.map(e => objects.find(o => o.deflated.length === e.length)!.hash)
@@ -492,6 +500,102 @@ describe('progress events', () => {
     // indices 1..10, each exactly once.
     const indices = progressEvents.map(e => e.index).sort((a, b) => a - b)
     expect(indices).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Byte-level progress (upload-bytes) — the smooth bar
+// ---------------------------------------------------------------------------
+
+describe('byte progress (upload-bytes)', () => {
+  it('streams an explicit Content-Length matching the encoded body (wire framing unchanged)', async () => {
+    let contentLength: string | null = null
+    let bodyLen = 0
+    const fakeFetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      contentLength = new Headers(init?.headers).get('Content-Length')
+      bodyLen = (await readBody(init)).byteLength
+      return packSuccessRes(['a'.repeat(64)])
+    }) as unknown as typeof fetch
+
+    await uploadBlobsPacked([fakeBlobSized('a'.repeat(64), 1024)], {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      rootTree: ROOT_TREE,
+      fetch: fakeFetch,
+    })
+
+    expect(contentLength).toBe(String(bodyLen))
+  })
+
+  it('fills smoothly within one pack POST and lands exactly on 100%', async () => {
+    // One object large enough to span several 256 KB stream chunks, so a single
+    // pack POST produces multiple intermediate byte updates (not one jump).
+    const obj = fakeBlobSized('a'.repeat(64), 600 * 1024)
+    const fakeFetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const entries = await decodePackBody(init) // draining the stream fires onChunk
+      return packSuccessRes(entries.map(() => obj.hash))
+    }) as unknown as typeof fetch
+
+    const events: Array<{ sent: number; total: number }> = []
+    await uploadBlobsPacked([obj], {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      rootTree: ROOT_TREE,
+      fetch: fakeFetch,
+      onProgress: e => {
+        if (e.kind === 'upload-bytes') events.push({ sent: e.sent, total: e.total })
+      },
+    })
+
+    // Initial empty-bar draw + several chunk updates + final snap.
+    expect(events.length).toBeGreaterThan(2)
+    expect(events[0]!.sent).toBe(0)
+    const total = events[0]!.total
+    expect(total).toBeGreaterThan(600 * 1024) // entry bytes + OCPK framing
+    for (const e of events) {
+      expect(e.total).toBe(total) // total never drifts
+      expect(e.sent).toBeGreaterThanOrEqual(0)
+      expect(e.sent).toBeLessThanOrEqual(total) // clamped — never overshoots
+    }
+    // Monotonically non-decreasing.
+    for (let i = 1; i < events.length; i++) {
+      expect(events[i]!.sent).toBeGreaterThanOrEqual(events[i - 1]!.sent)
+    }
+    // Ends exactly full.
+    expect(events.at(-1)!.sent).toBe(total)
+  })
+
+  it('clamps to total and still lands on 100% when a retry re-sends bytes', async () => {
+    const objects = [fakeBlob('a'.repeat(64), 10), fakeBlob('b'.repeat(64), 10)]
+    let callCount = 0
+    const fakeFetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      callCount++
+      await decodePackBody(init) // drain → fire byte progress
+      if (callCount === 1) {
+        // b fails → its bytes get re-sent on retry, pushing raw sentBytes past total.
+        return packPartialRes([
+          { hash: 'a'.repeat(64), ok: true },
+          { hash: 'b'.repeat(64), ok: false },
+        ])
+      }
+      return packSuccessRes(['b'.repeat(64)])
+    }) as unknown as typeof fetch
+
+    const events: Array<{ sent: number; total: number }> = []
+    await uploadBlobsPacked(objects, {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      rootTree: ROOT_TREE,
+      fetch: fakeFetch,
+      onProgress: e => {
+        if (e.kind === 'upload-bytes') events.push({ sent: e.sent, total: e.total })
+      },
+    })
+
+    expect(callCount).toBe(2)
+    const total = events[0]!.total
+    for (const e of events) expect(e.sent).toBeLessThanOrEqual(total) // clamped despite re-send
+    expect(events.at(-1)!.sent).toBe(total)
   })
 })
 

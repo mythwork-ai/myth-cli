@@ -73,6 +73,10 @@ export interface PublishClientOptions {
 export type ProgressEvent =
   | { kind: 'checked'; total: number; missing: number }
   | { kind: 'uploaded'; index: number; total: number; hash: string }
+  // Byte-level upload progress. Emitted as the request body is flushed to the
+  // socket so the bar fills smoothly even when the whole publish is one pack
+  // POST. `sent`/`total` are deflated wire bytes; `sent` is clamped to `total`.
+  | { kind: 'upload-bytes'; sent: number; total: number }
   | { kind: 'finalized' }
 
 export interface FinalizeResult {
