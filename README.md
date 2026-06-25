@@ -59,6 +59,12 @@ By default this publishes to **prod** (`api.myth.work`). Pass `--staging` to pub
 myth publish --name my-app --staging
 ```
 
+To take a published app down again:
+
+```bash
+myth unpublish --name my-app
+```
+
 ### Flags
 
 ```bash
@@ -86,24 +92,22 @@ minutes before expiry) → browser handshake (then cached for next time).
 
 ## Config
 
-`myth run` and `myth publish` walk up from `cwd` looking for `myth.config.json`. The committed config is identity only:
+App identity lives in your `package.json` — the `"mythwork"` block, falling back to the package `name`:
 
 ```json
 {
-  "name": "<app name>"
+  "name": "my-app",
+  "mythwork": { "displayName": "My App", "theme": "light" }
 }
 ```
 
-`myth init` creates this for you. The `projectId` is **not** committed — it is
+`myth run` and `myth publish` walk up from `cwd` to find it (same discipline as `npm`/`git`). A standalone `myth.config.json` (`{ "name": "<app name>" }`) is the legacy fallback — `myth init` creates one, and it takes precedence if both are present.
+
+The `projectId` is **not** committed — it is
 per-(user, stage) derived state. On publish the CLI resolves it via an
 idempotent provision call keyed by `(owner, name)`, so the same user converges
 on the same project every time without any local state to drift or to 403 a
 teammate.
-
-Adding a `"projectId"` is therefore optional and means something specific: an
-explicit **team-shared pin** — "publish to exactly this project" (membership
-required). If you pin a project you're not a member of, publish falls back to
-your own project (and warns) rather than failing.
 
 ## Commands
 
@@ -113,4 +117,5 @@ your own project (and warns) rather than failing.
 | `myth init` | Create a new `myth.config.json` in the current directory |
 | `myth run [--entry <file>] [--port <port>]` | Start the Vite dev server (port 5173 by default) |
 | `myth publish [flags]` | Upload source + publish to `myth.work` (or staging); compiles at the edge |
+| `myth unpublish --name <shortName>` | Take down a published app (owner-gated) |
 | `myth help` | Show the help text |
