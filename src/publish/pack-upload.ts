@@ -37,7 +37,7 @@
  */
 
 import type { BuiltObject } from './build-objects.js'
-import type { PublishClientOptions } from './client.js'
+import type { ProgressEvent, PublishClientOptions } from './client.js'
 import { mapErrorResponse, PublishError, uploadBlobs } from './client.js'
 import { encodePack } from './pack-codec.js'
 
@@ -81,19 +81,62 @@ interface PackResult {
  * returned in `oversized` for per-object fallback — they cannot be packed.
  * Order within each pack is preserved (same as input order).
  */
-/** Encoded size of one entry: LEB128 length prefix (≤5 bytes for u32) + bytes. */
-function encodedEntrySize(len: number): number {
-  let varintLen = 1
-  let v = len
+/** Width in bytes of `value` encoded as an unsigned LEB-128 varint. */
+function varintLen(value: number): number {
+  let n = 1
+  let v = value
   while (v >= 0x80) {
     v >>>= 7
-    varintLen++
+    n++
   }
-  return varintLen + len
+  return n
+}
+
+/** Encoded size of one entry: LEB128 length prefix (≤5 bytes for u32) + bytes. */
+function encodedEntrySize(len: number): number {
+  return varintLen(len) + len
 }
 
 /** OCPK header: "OCPK" (4) + format (1) + count varint (≤2 bytes for ≤500). */
 const PACK_HEADER_BYTES = 7
+
+/**
+ * Exact encoded body size of a pack — matches `encodePack(...).length`.
+ * Used to pre-compute the byte total the progress bar fills toward, so the
+ * happy path lands on exactly 100% (the count varint is sized precisely here,
+ * unlike PACK_HEADER_BYTES which is a conservative upper bound for chunking).
+ */
+function packBodySize(pack: BuiltObject[]): number {
+  let n = 4 /* "OCPK" */ + 1 /* format */ + varintLen(pack.length)
+  for (const obj of pack) n += encodedEntrySize(obj.deflated.length)
+  return n
+}
+
+/**
+ * Wrap an in-memory body in a ReadableStream that yields fixed-size chunks and
+ * reports each chunk's length via `onChunk` as it is pulled. Sending the body
+ * as a stream (with an explicit Content-Length, so the wire framing is
+ * unchanged) lets us observe bytes leaving the socket and drive a smooth
+ * progress bar even within a single large pack POST.
+ */
+const PROGRESS_CHUNK_BYTES = 256 * 1024
+
+function progressBody(body: Uint8Array, onChunk?: (n: number) => void): ReadableStream<Uint8Array> {
+  let offset = 0
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= body.length) {
+        controller.close()
+        return
+      }
+      const end = Math.min(offset + PROGRESS_CHUNK_BYTES, body.length)
+      const chunk = body.subarray(offset, end)
+      offset = end
+      controller.enqueue(chunk)
+      onChunk?.(chunk.length)
+    },
+  })
+}
 
 function chunkIntoPacks(objects: BuiltObject[]): {
   packs: BuiltObject[][]
@@ -141,6 +184,7 @@ function chunkIntoPacks(objects: BuiltObject[]): {
 async function postPack(
   packObjects: BuiltObject[],
   opts: PublishClientOptions,
+  onChunk?: (bytes: number) => void,
 ): Promise<{ results: PackResult[]; status: number }> {
   const fetchImpl = opts.fetch ?? fetch
   const entries = packObjects.map(o => o.deflated)
@@ -148,16 +192,24 @@ async function postPack(
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/octet-stream',
+    // Declared so undici sends a length-framed body (not chunked) even though
+    // we stream it — keeps the wire identical to the old buffered POST while
+    // letting `onChunk` observe the upload for progress.
+    'Content-Length': String(body.length),
     Authorization: `Bearer ${opts.sessionToken}`,
     'X-Root-Tree': opts.rootTree,
   }
   if (opts.shortName) headers['X-Short-Name'] = opts.shortName
 
-  const res = await fetchImpl(`${opts.apiUrl}/publish/pack`, {
+  // `duplex: 'half'` is required by fetch whenever the body is a stream; it's
+  // absent from the DOM RequestInit type so we widen it locally.
+  const init: RequestInit & { duplex: 'half' } = {
     method: 'POST',
     headers,
-    body: body as unknown as BodyInit,
-  })
+    body: progressBody(body, onChunk) as unknown as BodyInit,
+    duplex: 'half',
+  }
+  const res = await fetchImpl(`${opts.apiUrl}/publish/pack`, init)
 
   return { results: await parsePackResponse(res, packObjects, opts), status: res.status }
 }
@@ -253,10 +305,12 @@ class PackUnavailableError extends Error {
  * Partial-failure retry: entries reported with `error` are re-packed and
  *   re-sent up to 3 rounds, with 250/500/1000ms backoff between rounds.
  * Fallback: 404/405 → falls back to per-object uploadBlobs for the whole set.
- * Progress: onProgress('uploaded', ...) events are emitted per-object as each
- *   pack completes (per-object granularity WITHIN a pack is not observable
- *   because the server processes entries in bulk; we advance the counter by
- *   the pack's entry count when the pack response arrives).
+ * Progress: two event streams.
+ *   - 'upload-bytes': bytes flushed to the socket, for a smooth bar. Pack
+ *     bodies are streamed (§postPack) so this advances mid-POST; the PUT
+ *     fallback paths advance it per-object on completion.
+ *   - 'uploaded': one per object as each pack completes (per-object granularity
+ *     WITHIN a pack isn't observable — the server processes entries in bulk).
  */
 export async function uploadBlobsPacked(
   toUpload: BuiltObject[],
@@ -284,6 +338,38 @@ export async function uploadBlobsPacked(
   const { packs: initialPacks, oversized } = chunkIntoPacks(toUpload)
   const succeededHashes = new Set<string>()
 
+  // --- Byte-level progress accounting --------------------------------------
+  // Total = exact pack body bytes (the happy path) + per-object bytes for any
+  // oversized objects that take the PUT path. sentBytes is clamped to total on
+  // emit, and snapped to total on success, so retries/fallbacks that re-send
+  // bytes can never push the bar past 100% or leave it short.
+  const sizeByHash = new Map<string, number>()
+  for (const obj of toUpload) sizeByHash.set(obj.hash, obj.deflated.length)
+  let totalBytes = 0
+  for (const pack of initialPacks) totalBytes += packBodySize(pack)
+  for (const obj of oversized) totalBytes += obj.deflated.length
+  let sentBytes = 0
+
+  function emitBytes(): void {
+    opts.onProgress?.({ kind: 'upload-bytes', sent: Math.min(sentBytes, totalBytes), total: totalBytes })
+  }
+  function finishBytes(): void {
+    sentBytes = totalBytes
+    emitBytes()
+  }
+  // onProgress handler for the per-object PUT fallback paths: pass the
+  // re-indexed 'uploaded' event through and advance the byte counter by the
+  // object's wire size as each PUT lands.
+  function putPassthrough(e: ProgressEvent): void {
+    if (e.kind !== 'uploaded') return
+    completedCount++
+    opts.onProgress?.({ ...e, index: completedCount, total })
+    sentBytes += sizeByHash.get(e.hash) ?? 0
+    emitBytes()
+  }
+
+  emitBytes() // draw the empty bar immediately (sent=0)
+
   // Oversized objects fall back to per-object PUT immediately.
   if (oversized.length > 0) {
     // This is genuinely surprising (objects should be ≤ 50 MB inflated, much
@@ -291,21 +377,16 @@ export async function uploadBlobsPacked(
     console.log(
       `[myth] ${oversized.length} object(s) exceed the pack size cap; uploading individually.`,
     )
-    await uploadBlobs(oversized, {
-      ...opts,
-      onProgress: e => {
-        if (e.kind === 'uploaded') {
-          completedCount++
-          opts.onProgress?.({ ...e, index: completedCount, total })
-        }
-      },
-    })
+    await uploadBlobs(oversized, { ...opts, onProgress: putPassthrough })
     // Mark them landed so a later 404 pack-fallback (which re-uploads
     // everything not in succeededHashes) doesn't re-PUT and double-count them.
     for (const obj of oversized) succeededHashes.add(obj.hash)
   }
 
-  if (initialPacks.length === 0) return
+  if (initialPacks.length === 0) {
+    finishBytes()
+    return
+  }
 
   // --- Upload packs in rounds, retrying partial failures --------------------
   let pendingPacks = initialPacks
@@ -333,7 +414,10 @@ export async function uploadBlobsPacked(
 
         let results: PackResult[]
         try {
-          const outcome = await postPack(packObjs, opts)
+          const outcome = await postPack(packObjs, opts, bytes => {
+            sentBytes += bytes
+            emitBytes()
+          })
           results = outcome.results
         } catch (err) {
           if (err instanceof PackUnavailableError) {
@@ -394,15 +478,8 @@ export async function uploadBlobsPacked(
       // progress — dedup makes re-PUTs harmless but the counter wouldn't be).
       console.log('[myth] pack endpoint unavailable, falling back to per-object upload')
       const remaining = toUpload.filter(o => !succeededHashes.has(o.hash))
-      await uploadBlobs(remaining, {
-        ...opts,
-        onProgress: e => {
-          if (e.kind === 'uploaded') {
-            completedCount++
-            opts.onProgress?.({ ...e, index: completedCount, total })
-          }
-        },
-      })
+      await uploadBlobs(remaining, { ...opts, onProgress: putPassthrough })
+      finishBytes()
       return
     }
 
@@ -425,18 +502,14 @@ export async function uploadBlobsPacked(
     const { packs: retryPacks, oversized: retryOversized } = chunkIntoPacks(allFailed)
     if (retryOversized.length > 0) {
       // Shouldn't happen (they already passed the cap check), but be safe.
-      await uploadBlobs(retryOversized, {
-        ...opts,
-        onProgress: e => {
-          if (e.kind === 'uploaded') {
-            completedCount++
-            opts.onProgress?.({ ...e, index: completedCount, total })
-          }
-        },
-      })
+      await uploadBlobs(retryOversized, { ...opts, onProgress: putPassthrough })
     }
     pendingPacks = retryPacks
   }
+
+  // All packs landed — snap the bar to 100% (a no-op on the happy path, where
+  // sentBytes already equals totalBytes exactly).
+  finishBytes()
 }
 
 function sleep(ms: number): Promise<void> {

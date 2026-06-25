@@ -306,20 +306,28 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
       }
       return obj
     })
-    const progress = createProgress('Uploading', Boolean(process.stdout.isTTY))
-    progress.update(0, missing.length)
-    await uploadBlobsPacked(toUpload, {
-      apiUrl,
-      sessionToken: session.token,
-      rootTree: built.rootTree,
-      shortName,
-      onProgress: e => {
-        if (e.kind === 'uploaded') {
-          progress.update(e.index, e.total)
-        }
-      },
-    })
-    progress.finish()
+    const progress = createProgress('Uploading', Boolean(process.stdout.isTTY), formatBytes)
+    try {
+      await uploadBlobsPacked(toUpload, {
+        apiUrl,
+        sessionToken: session.token,
+        rootTree: built.rootTree,
+        shortName,
+        onProgress: e => {
+          // Drive the bar by bytes flushed to the socket so it fills smoothly
+          // even when the whole publish is a single pack POST. The first
+          // 'upload-bytes' event (sent=0) fires synchronously and draws the
+          // empty bar.
+          if (e.kind === 'upload-bytes') {
+            progress.update(e.sent, e.total)
+          }
+        },
+      })
+    } finally {
+      // Terminate the bar's line even on error, so a thrown PublishError prints
+      // on its own line instead of colliding with the half-drawn bar.
+      progress.finish()
+    }
   }
 
   // 5. Resolve the target project, then finalize.
