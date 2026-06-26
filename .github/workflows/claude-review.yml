@@ -9,7 +9,21 @@ name: Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    # ready_for_review fires when a draft is marked ready — that's when the
+    # first review runs (drafts are skipped via the job `if:` below).
+    types: [opened, synchronize, ready_for_review]
+    # Docs-only changes skip the review. Safe: main has no required-check gate;
+    # the merge approval comes from claude-auto-approve.yml (which still runs).
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+
+# A new push supersedes the in-flight review for the same PR, so a burst of
+# (force-)pushes collapses to a single review instead of stacking up.
+concurrency:
+  group: code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -20,6 +34,9 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    # Skip while the PR is a draft — iterate freely; review only runs once the
+    # author marks it "Ready for review" (mirrors claude-auto-approve.yml).
+    if: github.event.pull_request.draft == false
     steps:
       - uses: actions/checkout@v5
 
