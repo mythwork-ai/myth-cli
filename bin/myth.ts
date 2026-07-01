@@ -55,6 +55,9 @@ Usage:
                [--staging]       --default (or --name ~apex) also sets the
                [--force]         zone apex, https://{zone}/ (owner-gated).
                [--api <url>]     Unchanged content no-ops unless --force.
+               [--no-wait]       Skip build-status streaming; exit after upload.
+               [--watch]         Stream build status even in non-TTY / CI.
+               [--subscribe <t>] Stream status for an already-published tree.
                                  Default backend is prod (api.myth.work);
                                  --staging uses api.llama.space.
   myth unpublish --name <name>   Remove a published alias and release its
@@ -71,6 +74,9 @@ Examples:
   myth publish                   # Publish to prod, canonical URL only
   myth publish --name my-app     # Publish with alias my-app.myth.work
   myth publish --name my-app --staging   # Publish to api.llama.space
+  myth publish --no-wait         # Fire-and-forget (today's CI behaviour)
+  myth publish --watch           # Force build-status stream even in CI
+  myth publish --subscribe <tree># Re-attach to a detached build
   myth unpublish --name my-app           # Remove the my-app alias (prod)
   myth unpublish --name my-app --staging # Remove the my-app alias (staging)
 `);
@@ -136,12 +142,31 @@ async function run(runArgs: string[]) {
   await startServer(cwd, explicitEntry, explicitPort);
 }
 
-async function publish(pubArgs: string[]) {
-  let shortName = parseStringFlag(pubArgs, "--name");
+/**
+ * Parse the `myth publish` argument vector into a typed options bag.
+ * Exported for unit testing. Calls process.exit on bad input (e.g. a flag
+ * that requires a value but got none).
+ */
+export interface PubArgs {
+  subscribeTree?: string;
+  shortName?: string;
+  apiUrl?: string;
+  staging: boolean;
+  apex: boolean;
+  force: boolean;
+  noWait: boolean;
+  watch: boolean;
+}
+
+export function parsePubArgs(pubArgs: string[]): PubArgs {
+  const subscribeTree = parseStringFlag(pubArgs, "--subscribe");
   const apiUrl = parseStringFlag(pubArgs, "--api");
   const staging = pubArgs.includes("--staging");
-  let apex = pubArgs.includes("--default") || pubArgs.includes("--apex");
   const force = pubArgs.includes("--force");
+  const noWait = pubArgs.includes("--no-wait");
+  const watch = pubArgs.includes("--watch");
+  let shortName = parseStringFlag(pubArgs, "--name");
+  let apex = pubArgs.includes("--default") || pubArgs.includes("--apex");
   // `--name ~apex` is sugar for --default: the reserved ~apex ALIASES key is
   // the apex pointer, but `~` is outside the alias grammar, so it maps to the
   // wire field `apex: true` instead of a literal shortName.
@@ -149,17 +174,46 @@ async function publish(pubArgs: string[]) {
     apex = true;
     shortName = undefined;
   }
-  const { publishCommand } = await import("../src/publish/index.js");
+  return { subscribeTree, shortName, apiUrl, staging, apex, force, noWait, watch };
+}
+
+async function publish(pubArgs: string[]) {
   const { PublishError } = await import("../src/publish/client.js");
   const { HandshakeTimeoutError } = await import("../src/publish/auth-handshake.js");
+  const parsed = parsePubArgs(pubArgs);
+
+  // --subscribe <tree>: skip packaging entirely; just stream that tree's status.
+  if (parsed.subscribeTree) {
+    const { subscribeCommand } = await import("../src/publish/index.js");
+    try {
+      await subscribeCommand({ tree: parsed.subscribeTree, staging: parsed.staging, apiUrl: parsed.apiUrl });
+    } catch (err) {
+      if (err instanceof PublishError) {
+        console.error(`[myth] ${err.message}`);
+        process.exit(1);
+      }
+      if (err instanceof HandshakeTimeoutError) {
+        console.error(`[myth] ${err.message}`);
+        console.error("[myth] No sign-in received. Re-run `myth publish --subscribe`.");
+        process.exit(1);
+      }
+      console.error(`[myth] ${(err as Error).message ?? err}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  const { publishCommand } = await import("../src/publish/index.js");
   try {
     await publishCommand({
       cwd: process.cwd(),
-      shortName,
-      staging,
-      apiUrl,
-      apex,
-      force,
+      shortName: parsed.shortName,
+      staging: parsed.staging,
+      apiUrl: parsed.apiUrl,
+      apex: parsed.apex,
+      force: parsed.force,
+      noWait: parsed.noWait,
+      watch: parsed.watch,
     });
   } catch (err) {
     if (err instanceof PublishError) {

@@ -37,6 +37,7 @@ import {
 } from './client.js'
 import { uploadBlobsPacked } from './pack-upload.js'
 import { createProgress } from './progress.js'
+import { pollBuildStatus } from './build-status-poller.js'
 
 export interface PublishOptions {
   /** Working directory the command was invoked from. */
@@ -57,6 +58,18 @@ export interface PublishOptions {
   apex?: boolean
   /** Publish even when the target URL already serves this exact content. */
   force?: boolean
+  /**
+   * Skip the post-finalize build-status stream; exit immediately after
+   * printing "✓ Published." (today's fire-and-forget behaviour).
+   * Also forced in non-TTY contexts unless --watch is set.
+   */
+  noWait?: boolean
+  /**
+   * Force build-status streaming even when stdout is not a TTY (e.g. the
+   * user explicitly asked to watch in a CI log). Has no effect when
+   * --no-wait is also set.
+   */
+  watch?: boolean
 }
 
 const PROD_API_URL = 'https://api.myth.work'
@@ -403,6 +416,52 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     console.log(`[myth]   Apex:      https://${zoneSuffix}  (default app set)`)
   }
   printPublishWarnings(result.warnings)
+
+  // Stream Tier-2 build status when appropriate.
+  // Default: only in interactive TTY contexts and when --no-wait wasn't passed.
+  // Override with --watch to force streaming in non-TTY (e.g. CI log).
+  // NOTE: this default (TTY-gate) is flagged in the PR for owner confirmation.
+  const shouldStream =
+    !opts.noWait && (opts.watch || process.stdout.isTTY)
+  if (shouldStream) {
+    const aliasUrl = result.alias ? `${result.alias}.${zoneSuffix}` : undefined
+    const pollResult = await pollBuildStatus(result.tree, {
+      apiUrl,
+      sessionToken: session.token,
+      aliasUrl,
+    })
+    if (pollResult.exitCode !== 0) {
+      process.exitCode = pollResult.exitCode
+    }
+  }
+}
+
+/**
+ * Subscribe to build status for an already-published tree without
+ * re-packaging or re-uploading. Used by `myth publish --subscribe <tree>`.
+ * Always streams regardless of TTY.
+ */
+export async function subscribeCommand(opts: {
+  tree: string
+  staging?: boolean
+  apiUrl?: string
+  authOrigin?: string
+}): Promise<void> {
+  const { apiUrl, authOrigin } = resolveBackend(opts)
+  const session = await acquireSessionToken(authOrigin)
+  const zoneSuffix = inferZoneSuffix(apiUrl)
+  console.log(`[myth] Subscribing to build status for ${opts.tree.slice(0, 12)}…`)
+  const pollResult = await pollBuildStatus(opts.tree, {
+    apiUrl,
+    sessionToken: session.token,
+    aliasUrl: undefined,
+  })
+  // surfacing a deploy URL isn't possible here (no alias info at subscribe time),
+  // but the poller still prints "App deployed" on success.
+  void zoneSuffix
+  if (pollResult.exitCode !== 0) {
+    process.exitCode = pollResult.exitCode
+  }
 }
 
 /**
