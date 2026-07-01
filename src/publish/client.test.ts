@@ -21,6 +21,7 @@ import {
   MAX_PARALLEL_UPLOADS,
   provisionProject,
   PublishError,
+  sleep,
   uploadBlobs,
 } from './client.js'
 import type { BuiltObject } from './build-objects.js'
@@ -402,6 +403,26 @@ describe('finalizePublish', () => {
     expect(malformed.timings).toBeNull()
   })
 
+  it('parses the additive deferred field; false when absent (older server) or non-true', async () => {
+    const respond = (deferred: unknown) =>
+      (async () =>
+        jsonRes({
+          commit: 'a'.repeat(64),
+          tree: 'b'.repeat(64),
+          canonical: 'cccc'.repeat(13),
+          alias: null,
+          ...(deferred === undefined ? {} : { deferred }),
+        })) as unknown as typeof fetch
+    const base = { apiUrl: API, sessionToken: TOKEN, rootTree: ROOT_TREE }
+
+    expect((await finalizePublish('a'.repeat(64), { ...base, fetch: respond(true) })).deferred).toBe(true)
+    // Older server without the field → unchanged behavior (false).
+    expect((await finalizePublish('a'.repeat(64), { ...base, fetch: respond(undefined) })).deferred).toBe(false)
+    expect((await finalizePublish('a'.repeat(64), { ...base, fetch: respond(false) })).deferred).toBe(false)
+    // Shape drift → false, never a throw.
+    expect((await finalizePublish('a'.repeat(64), { ...base, fetch: respond('yes') })).deferred).toBe(false)
+  })
+
   it('parses non-fatal warnings from the response', async () => {
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       expect(String(url)).toBe(`${API}/publish`)
@@ -535,5 +556,26 @@ describe('provisionProject', () => {
     await expect(
       provisionProject({ apiUrl: API, sessionToken: TOKEN, localId: 'x', projectName: 'x', fetch: fakeFetch }),
     ).rejects.toMatchObject({ code: 'unknown' })
+  })
+})
+
+describe('sleep (shared abortable helper)', () => {
+  it('resolves after the given delay', async () => {
+    const start = Date.now()
+    await sleep(20)
+    expect(Date.now() - start).toBeGreaterThanOrEqual(15)
+  })
+
+  it('rejects promptly when the signal aborts mid-sleep', async () => {
+    const controller = new AbortController()
+    const p = sleep(60_000, controller.signal)
+    controller.abort()
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('rejects immediately when the signal is already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(sleep(10, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
   })
 })

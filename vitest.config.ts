@@ -8,7 +8,7 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'bin/**/*.test.ts'],
     // Default 5s is plenty for unit tests; build-objects.test boots a
     // tiny synthetic dist tree, no Vite involvement.
     testTimeout: 5000,
