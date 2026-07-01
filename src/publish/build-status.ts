@@ -34,6 +34,12 @@ export interface BuildStatusOptions {
   sessionToken: string
   /** Override fetch (tests). */
   fetch?: typeof fetch
+  /**
+   * Abort signal wired into the underlying fetch so a caller (e.g. the
+   * poller's SIGINT detach) can cancel an in-flight request immediately.
+   * An abort rejects the returned promise with the signal's abort reason.
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -55,8 +61,13 @@ export async function fetchBuildStatus(
       headers: {
         Authorization: `Bearer ${opts.sessionToken}`,
       },
+      signal: opts.signal,
     })
-  } catch {
+  } catch (e) {
+    // Cancellation is not "unavailable" — rethrow so the caller can detach.
+    if (opts.signal?.aborted || (e as Error | null)?.name === 'AbortError') {
+      throw e
+    }
     // Network error → treat as unavailable so CI isn't blocked.
     return { available: false }
   }

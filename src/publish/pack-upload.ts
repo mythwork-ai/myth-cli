@@ -38,7 +38,7 @@
 
 import type { BuiltObject } from './build-objects.js'
 import type { ProgressEvent, PublishClientOptions } from './client.js'
-import { mapErrorResponse, PublishError, uploadBlobs } from './client.js'
+import { mapErrorResponse, PublishError, sleep, uploadBlobs } from './client.js'
 import { encodePack } from './pack-codec.js'
 
 // ---------------------------------------------------------------------------
@@ -510,8 +510,4 @@ export async function uploadBlobsPacked(
   // All packs landed — snap the bar to 100% (a no-op on the happy path, where
   // sentBytes already equals totalBytes exactly).
   finishBytes()
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms))
 }

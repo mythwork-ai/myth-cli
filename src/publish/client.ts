@@ -103,6 +103,14 @@ export interface FinalizeResult {
   apex: boolean
   /** Non-fatal advisories from the edge compile (e.g. host-version overrides). */
   warnings: string[]
+  /**
+   * True when the worker DEFERRED the alias cutover until the Tier-2 build
+   * succeeds: the returned tree is not live yet, and a sustained `none`
+   * build status right after publish just means the fire-and-forget status
+   * write hasn't propagated. Additive — false when the backend predates
+   * the field.
+   */
+  deferred: boolean
 }
 
 /**
@@ -312,6 +320,7 @@ export async function finalizePublish(
         )
       : [],
     timings: parseTimings((parsed as { timings?: unknown }).timings),
+    deferred: (parsed as { deferred?: unknown }).deferred === true,
   }
 }
 
@@ -529,8 +538,29 @@ async function mapUnpublishErrorResponse(res: Response, name: string): Promise<P
   )
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms))
+/**
+ * Shared sleep helper (the single copy — client, pack-upload and the
+ * build-status poller all use this one). Optionally abortable: when `signal`
+ * aborts mid-sleep the timer is cleared (so it can't hold the event loop)
+ * and the promise rejects with the signal's abort reason (an AbortError
+ * DOMException by default).
+ */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error('aborted'))
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason ?? new Error('aborted'))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 // ===========================================================================

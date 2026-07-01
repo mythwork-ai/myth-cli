@@ -416,6 +416,11 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     console.log(`[myth]   Apex:      https://${zoneSuffix}  (default app set)`)
   }
   printPublishWarnings(result.warnings)
+  if (result.deferred) {
+    console.log(
+      '[myth] Deferred cutover: current version stays live until the new build succeeds.',
+    )
+  }
 
   // Stream Tier-2 build status when appropriate.
   // Default: only in interactive TTY contexts and when --no-wait wasn't passed.
@@ -429,6 +434,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
       apiUrl,
       sessionToken: session.token,
       aliasUrl,
+      deferred: result.deferred,
     })
     if (pollResult.exitCode !== 0) {
       process.exitCode = pollResult.exitCode

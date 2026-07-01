@@ -179,6 +179,41 @@ describe('fetchBuildStatus', () => {
     expect(result).toEqual({ available: false })
   })
 
+  it('passes the abort signal through to fetch', async () => {
+    let capturedSignal: AbortSignal | null | undefined
+    const fakeFetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      capturedSignal = init?.signal
+      return jsonRes({ tree: TREE, builderVersion: 'v1', status: 'ok' })
+    }) as unknown as typeof fetch
+
+    const controller = new AbortController()
+    await fetchBuildStatus(TREE, {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      fetch: fakeFetch,
+      signal: controller.signal,
+    })
+
+    expect(capturedSignal).toBe(controller.signal)
+  })
+
+  it('rethrows an abort instead of mapping it to endpoint unavailable', async () => {
+    const controller = new AbortController()
+    const fakeFetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      controller.abort()
+      throw new DOMException('This operation was aborted', 'AbortError')
+    }) as unknown as typeof fetch
+
+    await expect(
+      fetchBuildStatus(TREE, {
+        apiUrl: API,
+        sessionToken: TOKEN,
+        fetch: fakeFetch,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
   it('uses a missing builderVersion field gracefully', async () => {
     const fakeFetch = vi.fn(async () =>
       jsonRes({ tree: TREE, status: 'pending' }),
