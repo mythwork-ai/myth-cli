@@ -60,14 +60,19 @@ export interface PublishOptions {
   force?: boolean
   /**
    * Skip the post-finalize build-status stream; exit immediately after
-   * printing "✓ Published." (today's fire-and-forget behaviour).
-   * Also forced in non-TTY contexts unless --watch is set.
+   * printing "✓ Published." (today's fire-and-forget behaviour). This is an
+   * explicit escape hatch for callers who genuinely want fire-and-forget —
+   * it is NOT the default for deferred (Tier-2) publishes: a deferred build
+   * that later fails must not be reported as a silent success, so deferred
+   * publishes always stream build status regardless of TTY unless the
+   * caller passes --no-wait explicitly.
    */
   noWait?: boolean
   /**
    * Force build-status streaming even when stdout is not a TTY (e.g. the
    * user explicitly asked to watch in a CI log). Has no effect when
-   * --no-wait is also set.
+   * --no-wait is also set, and has no effect on deferred (Tier-2) publishes,
+   * which always stream regardless of this flag.
    */
   watch?: boolean
 }
@@ -214,6 +219,31 @@ export async function acquireSessionToken(authOrigin: string): Promise<{
     // cache write is best-effort; the publish proceeds either way
   }
   return { token: handshake.sessionToken, who }
+}
+
+/**
+ * Whether to stream (and block on) build status after a finalize.
+ *
+ * Deferred (Tier-2) publishes always stream, regardless of TTY or --watch:
+ * the alias doesn't cut over until the server-side build succeeds, so a
+ * caller that doesn't wait for the result can't tell a failed build from a
+ * successful one — exactly the gap that let a `no_lockfile` Tier-2 build
+ * failure report as a silent CI-green success. `--no-wait` is the one
+ * explicit override that still forces fire-and-forget, even when deferred.
+ *
+ * Non-deferred (Tier-1) publishes keep the original behavior: stream only
+ * in an interactive TTY, or when `--watch` forces it in a non-TTY context.
+ *
+ * Pure function of plain booleans (no `process.stdout.isTTY` read inside)
+ * so it's unit-testable without mocking global state.
+ */
+export function shouldStreamBuildStatus(opts: {
+  noWait?: boolean
+  watch?: boolean
+  isTTY: boolean
+  deferred: boolean
+}): boolean {
+  return !opts.noWait && (opts.watch || opts.isTTY || opts.deferred)
 }
 
 /**
@@ -423,11 +453,27 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   }
 
   // Stream Tier-2 build status when appropriate.
-  // Default: only in interactive TTY contexts and when --no-wait wasn't passed.
-  // Override with --watch to force streaming in non-TTY (e.g. CI log).
-  // NOTE: this default (TTY-gate) is flagged in the PR for owner confirmation.
-  const shouldStream =
-    !opts.noWait && (opts.watch || process.stdout.isTTY)
+  //
+  // Deferred (Tier-2) publishes ALWAYS stream and block on the result — in
+  // CI, in scripts, everywhere — because the alias doesn't cut over until
+  // the server-side build succeeds, and a build that later fails must not
+  // report a silent success. This was resolved after an incident where a
+  // Tier-2 build failed (`no_lockfile`) after a non-TTY CI invocation
+  // exited 0 immediately, so the alias never promoted but the GitHub
+  // Actions job stayed green throughout.
+  //
+  // Non-deferred (Tier-1) publishes keep the original default: stream only
+  // in interactive TTY contexts, or when --watch forces it in a non-TTY
+  // context (e.g. a CI log the caller wants to watch anyway).
+  //
+  // --no-wait is still an explicit escape hatch that forces fire-and-forget
+  // even for deferred publishes, for callers who deliberately want it.
+  const shouldStream = shouldStreamBuildStatus({
+    noWait: opts.noWait,
+    watch: opts.watch,
+    isTTY: Boolean(process.stdout.isTTY),
+    deferred: result.deferred,
+  })
   if (shouldStream) {
     const aliasUrl = result.alias ? `${result.alias}.${zoneSuffix}` : undefined
     const pollResult = await pollBuildStatus(result.tree, {
