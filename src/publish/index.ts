@@ -23,6 +23,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { loadConfigOrThrow, OrbitConfigError } from '../virtual-html.js'
 import { assembleSourceAndHash } from './build-objects.js'
+import { checkLockfile, formatLockfileDriftMessage } from './lockfile-check.js'
 import { selectSourceFiles } from './source-select.js'
 import { validateSource } from './validate.js'
 import { runAuthHandshake } from './auth-handshake.js'
@@ -269,6 +270,18 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     `[myth] Project: ${config.name}${pinnedProjectId ? ` (pinned ${pinnedProjectId})` : ''}`,
   )
   console.log(`[myth] Backend: ${apiUrl}${opts.apex ? ' (apex default)' : ''}`)
+
+  // 0. Fast local lockfile-drift check — before any packaging/upload. Catches
+  // the same failure the server-side Tier-2 build container would hit
+  // (`no_lockfile`) in well under a second instead of a round trip through
+  // packaging + upload + finalize + a queued build. No-ops when there's no
+  // lockfile at all (see lockfile-check.ts for why that's conservative).
+  const lockfileResult = await checkLockfile(root)
+  if (!lockfileResult.ok) {
+    throw new OrbitConfigError(
+      'Cannot publish — ' + formatLockfileDriftMessage(lockfileResult),
+    )
+  }
 
   // 1. Validate + assemble source (no local build — the edge compiles).
   const pkgPath = path.join(root, 'package.json')
