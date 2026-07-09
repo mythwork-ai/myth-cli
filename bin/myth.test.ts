@@ -1,12 +1,12 @@
 /**
- * Tests for myth publish flag parsing (parsePubArgs).
+ * Tests for myth publish flag parsing (parsePubArgs) and `myth clone`.
  *
  * parsePubArgs is a pure function — no process.exit, no imports — so it
  * can be tested synchronously without mocking the entire publish pipeline.
  */
 
-import { describe, expect, it } from 'vitest'
-import { parsePubArgs } from './myth.js'
+import { describe, expect, it, vi } from 'vitest'
+import { clone, parsePubArgs, type CloneRunner } from './myth.js'
 
 describe('parsePubArgs — --subscribe', () => {
   it('parses --subscribe <tree> and sets subscribeTree', () => {
@@ -112,5 +112,72 @@ describe('parsePubArgs — existing flags still work', () => {
       noWait: false,
       watch: false,
     })
+  })
+})
+
+describe('clone', () => {
+  it('passes the repo URL as its own argv element, never through a shell', async () => {
+    const runner: CloneRunner = vi.fn(async () => {})
+    await clone('reveal', runner)
+    expect(runner).toHaveBeenCalledWith('git', [
+      'clone',
+      'https://github.com/mythwork-ai/reveal',
+    ])
+  })
+
+  it('does not let shell metacharacters in <name> escape the clone argument (regression for the execSync injection)', async () => {
+    const runner: CloneRunner = vi.fn(async () => {})
+    const maliciousName = 'x; rm -rf ~'
+    await clone(maliciousName, runner)
+
+    // The dangerous payload must arrive as a single argv element appended
+    // to `git clone`, not spliced into a command string a shell could
+    // split on `;`. With execFile/argv there is no shell in the loop, so
+    // "rm" is never a command of its own — it's just part of one (invalid)
+    // URL argument.
+    expect(runner).toHaveBeenCalledTimes(1)
+    const [cmd, cmdArgs] = (runner as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      string[],
+    ]
+    expect(cmd).toBe('git')
+    expect(cmdArgs).toEqual(['clone', `https://github.com/mythwork-ai/${maliciousName}`])
+    expect(cmdArgs).not.toContain('rm')
+    expect(cmdArgs.some((a) => a.includes(';'))).toBe(true) // it's inert text inside one arg
+  })
+
+  it('prints Usage and does not invoke the runner when name is missing', async () => {
+    const runner: CloneRunner = vi.fn(async () => {})
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit called')
+    })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(clone(undefined, runner)).rejects.toThrow('process.exit called')
+
+    expect(errorSpy).toHaveBeenCalledWith('Usage: myth clone <name>')
+    expect(runner).not.toHaveBeenCalled()
+
+    exitSpy.mockRestore()
+    errorSpy.mockRestore()
+  })
+
+  it('reports failure and exits when the runner rejects', async () => {
+    const runner: CloneRunner = vi.fn(async () => {
+      throw new Error('git clone failed')
+    })
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit called')
+    })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(clone('reveal', runner)).rejects.toThrow('process.exit called')
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Failed to clone https://github.com/mythwork-ai/reveal',
+    )
+
+    exitSpy.mockRestore()
+    errorSpy.mockRestore()
   })
 })
