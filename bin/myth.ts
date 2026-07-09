@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -112,17 +115,38 @@ async function init() {
   console.log(`Run \`myth run\` to start the dev server, or \`myth publish\` to ship it.`);
 }
 
-async function clone(name: string | undefined) {
+/** Runs a git command via execFile (argv form, no shell). Injected so unit
+ *  tests never spawn a real git process — mirrors the `LockfileRunner`
+ *  injection pattern in src/publish/lockfile-check.ts. */
+export type CloneRunner = (cmd: string, args: string[]) => Promise<void>;
+
+export const realCloneRunner: CloneRunner = async (cmd, args) => {
+  const { stdout, stderr } = await execFileAsync(cmd, args, {
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (stdout) process.stdout.write(stdout);
+  if (stderr) process.stderr.write(stderr);
+};
+
+export async function clone(
+  name: string | undefined,
+  runner: CloneRunner = realCloneRunner,
+) {
   if (!name) {
     console.error("Usage: myth clone <name>");
     process.exit(1);
+    return;
   }
 
   const repoUrl = `https://github.com/mythwork-ai/${name}`;
   console.log(`Cloning ${repoUrl}...`);
 
   try {
-    execSync(`git clone ${repoUrl}`, { stdio: "inherit" });
+    // `name` (and therefore repoUrl) comes straight from argv. Passing it as
+    // its own argv element to execFile — never interpolated into a shell
+    // string — means shell metacharacters in `name` (e.g. `x; rm -rf ~`)
+    // are just part of a single (invalid) URL argument, not executed.
+    await runner("git", ["clone", repoUrl]);
     console.log(`\nCloned into ${name}\n\nRun:\n  cd ${name}\n  myth run`);
   } catch {
     console.error(`Failed to clone ${repoUrl}`);
