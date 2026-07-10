@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -14,6 +14,9 @@ async function main() {
   switch (command) {
     case "clone":
       await clone(args[1]);
+      break;
+    case "pull":
+      await pull(args.slice(1));
       break;
     case "init":
       await init();
@@ -49,6 +52,10 @@ myth - CLI for running and publishing mythwork apps
 
 Usage:
   myth clone <name>              Clone an example from mythwork-ai/<name>
+  myth pull <name>                Reconstruct <name>'s currently-published
+             [--staging]           source into a new local dir ./<name>
+             [--api <url>]         (refuses an existing non-empty dir).
+             [--dir <path>]        Uses the same auth as publish.
   myth init                      Create myth.config.json (name only) in the
                                  current directory; first publish provisions the id
   myth run [--entry <file>]      Run the current directory as a mythwork app
@@ -70,6 +77,7 @@ Usage:
 Examples:
   myth clone reveal              # Clone the reveal example
   cd reveal
+  myth pull my-app                       # Reconstruct my-app into ./my-app
   myth init                      # Create myth.config.json
   myth run                       # Start the dev server
   myth run --entry MyApp.tsx     # Use a different entry file
@@ -150,6 +158,91 @@ export async function clone(
     console.log(`\nCloned into ${name}\n\nRun:\n  cd ${name}\n  myth run`);
   } catch {
     console.error(`Failed to clone ${repoUrl}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Parse the `myth pull` argument vector. The name is positional (the first
+ * non-flag argument); everything else follows the same `--flag <value>` /
+ * `--flag=value` convention as parsePubArgs. Exported for unit testing.
+ */
+export interface PullArgs {
+  name?: string;
+  apiUrl?: string;
+  staging: boolean;
+  dir?: string;
+}
+
+export function parsePullArgs(pullArgs: string[]): PullArgs {
+  const name = pullArgs[0] && !pullArgs[0].startsWith("--") ? pullArgs[0] : undefined;
+  const rest = name ? pullArgs.slice(1) : pullArgs;
+  const apiUrl = parseStringFlag(rest, "--api");
+  const staging = rest.includes("--staging");
+  const dir = parseStringFlag(rest, "--dir");
+  return { name, apiUrl, staging, dir };
+}
+
+/** True when `dir` exists and already contains at least one entry — the
+ *  git-clone-style guard against clobbering existing work. An existing
+ *  EMPTY directory is fine (matches `git clone`'s own behavior). Exported
+ *  for unit testing. */
+export function isNonEmptyDirectory(dir: string): boolean {
+  return existsSync(dir) && readdirSync(dir).length > 0;
+}
+
+export async function pull(pullArgs: string[]) {
+  const parsed = parsePullArgs(pullArgs);
+  if (!parsed.name) {
+    console.error("Usage: myth pull <name> [--staging] [--api <url>] [--dir <path>]");
+    process.exit(1);
+    return;
+  }
+  const destName = parsed.dir ?? parsed.name;
+  const destDir = path.resolve(process.cwd(), destName);
+
+  if (isNonEmptyDirectory(destDir)) {
+    console.error(`[myth] Refusing to pull into existing non-empty directory: ${destName}`);
+    process.exit(1);
+    return;
+  }
+
+  const { PublishError } = await import("../src/publish/client.js");
+  const { HandshakeTimeoutError } = await import("../src/publish/auth-handshake.js");
+  const { ReconstructError } = await import("../src/publish/read-objects.js");
+  const { pullCommand } = await import("../src/publish/pull.js");
+  try {
+    await pullCommand({
+      name: parsed.name,
+      destDir,
+      staging: parsed.staging,
+      apiUrl: parsed.apiUrl,
+    });
+    console.log(`\nPulled into ${destName}\n\nRun:\n  cd ${destName}\n  myth run`);
+  } catch (err) {
+    if (err instanceof PublishError) {
+      if (err.code === "not_found") {
+        console.error(`[myth] No published app named '${parsed.name}'.`);
+      } else if (err.code === "not_owner") {
+        console.error(`[myth] You are not the publisher of '${parsed.name}'.`);
+      } else {
+        console.error(`[myth] ${err.message}`);
+      }
+      process.exit(1);
+      return;
+    }
+    if (err instanceof ReconstructError) {
+      console.error(`[myth] ${err.message}`);
+      process.exit(1);
+      return;
+    }
+    if (err instanceof HandshakeTimeoutError) {
+      console.error(`[myth] ${err.message}`);
+      console.error("[myth] No sign-in received. Re-run `myth pull`.");
+      process.exit(1);
+      return;
+    }
+    console.error(`[myth] ${(err as Error).message ?? err}`);
     process.exit(1);
   }
 }

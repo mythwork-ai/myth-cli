@@ -127,6 +127,7 @@ export class PublishError extends Error {
       | 'too_large'
       | 'backend_down'
       | 'bad_bundle'
+      | 'corrupt_pack'
       | 'network'
       | 'unknown',
     message: string,
@@ -530,6 +531,122 @@ async function mapUnpublishErrorResponse(res: Response, name: string): Promise<P
       'Backend is having issues. Try again in a minute.',
       { status, shortName: name },
     )
+  }
+  return new PublishError(
+    'unknown',
+    `publish worker returned ${status}${serverMsg ? `: ${serverMsg}` : ''}`,
+    { status, shortName: name },
+  )
+}
+
+// ===========================================================================
+// Resolve: GET /publish/site/{name} (the `myth pull` read-side sibling of
+// DELETE /publish/site/{name})
+// ===========================================================================
+
+export interface ResolveSiteResult {
+  name: string
+  /** 64-hex head commit hash for the currently-live tree. */
+  headCommit: string
+  /** 64-hex root tree hash — what `myth pull` actually fetches objects for. */
+  rootTree: string
+  /** Crockford-32 canonical subdomain. */
+  canonical: string
+  /** Canonical project id, when the backend reports one. */
+  projectId?: string
+}
+
+export interface ResolveSiteOptions {
+  /** Worker base URL — e.g. https://api.myth.work or https://api.llama.space. */
+  apiUrl: string
+  /** Session JWT from the auth handshake. */
+  sessionToken: string
+  /** Override the fetch implementation (tests). */
+  fetch?: typeof fetch
+}
+
+/**
+ * GET /publish/site/{name}. Resolves a published alias to the head commit
+ * and root tree it's currently serving. Owner-gated, same as
+ * `deletePublishedSite` — a caller can only resolve names they published.
+ */
+export async function resolvePublishedSite(
+  name: string,
+  opts: ResolveSiteOptions,
+): Promise<ResolveSiteResult> {
+  const fetchImpl = opts.fetch ?? fetch
+  const res = await fetchImpl(`${opts.apiUrl}/publish/site/${encodeURIComponent(name)}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${opts.sessionToken}`,
+    },
+  })
+  if (!res.ok) {
+    throw await mapResolveSiteErrorResponse(res, name)
+  }
+  const parsed = (await res.json()) as {
+    headCommit?: unknown
+    rootTree?: unknown
+    canonical?: unknown
+    projectId?: unknown
+  }
+  if (
+    typeof parsed.headCommit !== 'string' ||
+    typeof parsed.rootTree !== 'string' ||
+    typeof parsed.canonical !== 'string'
+  ) {
+    throw new PublishError('unknown', 'malformed GET /publish/site response')
+  }
+  return {
+    name,
+    headCommit: parsed.headCommit,
+    rootTree: parsed.rootTree,
+    canonical: parsed.canonical,
+    projectId: typeof parsed.projectId === 'string' ? parsed.projectId : undefined,
+  }
+}
+
+/**
+ * Map a non-2xx GET /publish/site/{name} response onto a PublishError.
+ * Mirrors mapUnpublishErrorResponse's taxonomy (same underlying resource,
+ * opposite HTTP verb): 404 → not_found, 403 → not_owner, 401 →
+ * session_expired, 5xx → backend_down. No 400 case — there's no request
+ * body here to be malformed.
+ */
+async function mapResolveSiteErrorResponse(res: Response, name: string): Promise<PublishError> {
+  const status = res.status
+  let serverMsg: string | undefined
+  try {
+    const text = await res.text()
+    if (text) {
+      try {
+        const j = JSON.parse(text) as { error?: unknown }
+        if (typeof j.error === 'string') serverMsg = j.error
+      } catch {
+        serverMsg = text
+      }
+    }
+  } catch {
+    // best-effort
+  }
+
+  if (status === 401) {
+    return new PublishError('session_expired', `Session expired. Re-run \`myth pull ${name}\`.`, {
+      status,
+      shortName: name,
+    })
+  }
+  if (status === 403) {
+    return new PublishError('not_owner', `You are not the publisher of '${name}'.`, { status, shortName: name })
+  }
+  if (status === 404) {
+    return new PublishError('not_found', `No published app named '${name}'.`, { status, shortName: name })
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return new PublishError('backend_down', 'Backend is having issues. Try again in a minute.', {
+      status,
+      shortName: name,
+    })
   }
   return new PublishError(
     'unknown',
