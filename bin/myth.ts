@@ -52,10 +52,10 @@ myth - CLI for running and publishing mythwork apps
 
 Usage:
   myth clone <name>              Clone an example from mythwork-ai/<name>
-  myth pull <name>                Reconstruct <name>'s currently-published
-             [--staging]           source into a new local dir ./<name>
-             [--api <url>]         (refuses an existing non-empty dir).
-             [--dir <path>]        Uses the same auth as publish.
+  myth pull <name>              Reconstruct <name>'s currently-published
+               [--staging]      source into a new local dir ./<name>
+               [--api <url>]    (refuses an existing non-empty dir).
+               [--dir <path>]   Uses the same auth as publish.
   myth init                      Create myth.config.json (name only) in the
                                  current directory; first publish provisions the id
   myth run [--entry <file>]      Run the current directory as a mythwork app
@@ -77,7 +77,7 @@ Usage:
 Examples:
   myth clone reveal              # Clone the reveal example
   cd reveal
-  myth pull my-app                       # Reconstruct my-app into ./my-app
+  myth pull my-app                # Reconstruct my-app into ./my-app
   myth init                      # Create myth.config.json
   myth run                       # Start the dev server
   myth run --entry MyApp.tsx     # Use a different entry file

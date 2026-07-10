@@ -65,6 +65,24 @@ To take a published app down again:
 myth unpublish --name my-app
 ```
 
+## Pull
+
+Bring a published app's source back down to your own machine, as real files
+in a new local directory — the reverse of `myth publish`:
+
+```bash
+myth pull my-app
+cd my-app
+myth run
+```
+
+`myth pull` reconstructs exactly what's currently live at `my-app.myth.work`
+using the same content-addressed object graph `myth publish` builds — it
+refuses to overwrite an existing non-empty directory (same spirit as
+`git clone`). Supports `--staging` and `--api <url>` like the other commands,
+and `--dir <path>` to materialize into a directory with a different name than
+the app itself.
+
 ### Flags
 
 ```bash
@@ -114,6 +132,7 @@ teammate.
 | Command | Purpose |
 |---|---|
 | `myth clone <name>` | Clone `https://github.com/mythwork-ai/<name>` into the current directory |
+| `myth pull <name> [--dir <path>]` | Reconstruct a published app's current source into a new local directory |
 | `myth init` | Create a new `myth.config.json` in the current directory |
 | `myth run [--entry <file>] [--port <port>]` | Start the Vite dev server (port 5173 by default) |
 | `myth publish [flags]` | Upload source + publish to `myth.work` (or staging); compiles at the edge |
