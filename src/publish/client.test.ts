@@ -21,6 +21,7 @@ import {
   MAX_PARALLEL_UPLOADS,
   provisionProject,
   PublishError,
+  resolvePublishedSite,
   sleep,
   uploadBlobs,
 } from './client.js'
@@ -556,6 +557,105 @@ describe('provisionProject', () => {
     await expect(
       provisionProject({ apiUrl: API, sessionToken: TOKEN, localId: 'x', projectName: 'x', fetch: fakeFetch }),
     ).rejects.toMatchObject({ code: 'unknown' })
+  })
+})
+
+describe('resolvePublishedSite', () => {
+  it('success path: issues GET to {apiUrl}/publish/site/{name} with Bearer token', async () => {
+    const calls: { url: string; method: string; auth: string | null }[] = []
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      calls.push({
+        url: String(url),
+        method: init?.method ?? 'GET',
+        auth: headers.get('Authorization'),
+      })
+      return jsonRes({ headCommit: 'a'.repeat(64), rootTree: ROOT_TREE, canonical: 'abc123' })
+    }) as unknown as typeof fetch
+
+    const result = await resolvePublishedSite('my-app', { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toBe(`${API}/publish/site/my-app`)
+    expect(calls[0]!.method).toBe('GET')
+    expect(calls[0]!.auth).toBe(`Bearer ${TOKEN}`)
+    expect(result).toEqual({
+      name: 'my-app',
+      headCommit: 'a'.repeat(64),
+      rootTree: ROOT_TREE,
+      canonical: 'abc123',
+      projectId: undefined,
+    })
+  })
+
+  it('URL-encodes the name in the path', async () => {
+    const calls: string[] = []
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL) => {
+      calls.push(String(url))
+      return jsonRes({ headCommit: 'a'.repeat(64), rootTree: ROOT_TREE, canonical: 'abc123' })
+    }) as unknown as typeof fetch
+
+    await resolvePublishedSite('my app', { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch })
+
+    expect(calls[0]).toBe(`${API}/publish/site/my%20app`)
+  })
+
+  it('passes projectId through when the backend reports one', async () => {
+    const fakeFetch = vi.fn(async () =>
+      jsonRes({ headCommit: 'a'.repeat(64), rootTree: ROOT_TREE, canonical: 'abc123', projectId: 'proj-1' }),
+    ) as unknown as typeof fetch
+
+    const result = await resolvePublishedSite('my-app', { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch })
+    expect(result.projectId).toBe('proj-1')
+  })
+
+  it('throws unknown on a malformed 200 response (missing rootTree)', async () => {
+    const fakeFetch = vi.fn(async () => jsonRes({ headCommit: 'a'.repeat(64) })) as unknown as typeof fetch
+
+    await expect(
+      resolvePublishedSite('my-app', { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'unknown' })
+  })
+
+  it('maps 404 to not_found', async () => {
+    const fakeFetch = vi.fn(async () => jsonRes({}, 404)) as unknown as typeof fetch
+
+    await expect(
+      resolvePublishedSite('gone-app', { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'not_found', message: expect.stringContaining('gone-app') })
+  })
+
+  it('maps 403 to not_owner', async () => {
+    const fakeFetch = vi.fn(async () => jsonRes({}, 403)) as unknown as typeof fetch
+
+    await expect(
+      resolvePublishedSite('other-app', { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'not_owner', message: expect.stringContaining('not the publisher') })
+  })
+
+  it('maps 401 to session_expired', async () => {
+    const fakeFetch = vi.fn(async () => jsonRes({}, 401)) as unknown as typeof fetch
+
+    await expect(
+      resolvePublishedSite('my-app', { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'session_expired' })
+  })
+
+  it('maps 502/503/504 to backend_down', async () => {
+    for (const status of [502, 503, 504]) {
+      const fakeFetch = vi.fn(async () => new Response('bad gateway', { status })) as unknown as typeof fetch
+      await expect(
+        resolvePublishedSite('my-app', { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch }),
+      ).rejects.toMatchObject({ code: 'backend_down' })
+    }
+  })
+
+  it('maps unknown status to unknown code', async () => {
+    const fakeFetch = vi.fn(async () => new Response('teapot', { status: 418 })) as unknown as typeof fetch
+
+    await expect(
+      resolvePublishedSite('my-app', { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'unknown', message: expect.stringContaining('418') })
   })
 })
 

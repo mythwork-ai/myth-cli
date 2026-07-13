@@ -6,7 +6,17 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { clone, parsePubArgs, type CloneRunner } from './myth.js'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import {
+  clone,
+  isNonEmptyDirectory,
+  parsePubArgs,
+  parsePullArgs,
+  pull,
+  type CloneRunner,
+} from './myth.js'
 
 describe('parsePubArgs — --subscribe', () => {
   it('parses --subscribe <tree> and sets subscribeTree', () => {
@@ -179,5 +189,108 @@ describe('clone', () => {
 
     exitSpy.mockRestore()
     errorSpy.mockRestore()
+  })
+})
+
+describe('parsePullArgs', () => {
+  it('parses a positional name', () => {
+    const result = parsePullArgs(['my-app'])
+    expect(result.name).toBe('my-app')
+    expect(result.staging).toBe(false)
+  })
+
+  it('parses --staging, --api, --dir alongside the name', () => {
+    const result = parsePullArgs([
+      'my-app',
+      '--staging',
+      '--api',
+      'http://localhost:8787',
+      '--dir',
+      'somewhere',
+    ])
+    expect(result.name).toBe('my-app')
+    expect(result.staging).toBe(true)
+    expect(result.apiUrl).toBe('http://localhost:8787')
+    expect(result.dir).toBe('somewhere')
+  })
+
+  it('supports --dir=value form', () => {
+    const result = parsePullArgs(['my-app', '--dir=elsewhere'])
+    expect(result.dir).toBe('elsewhere')
+  })
+
+  it('leaves name undefined when the first arg is a flag', () => {
+    const result = parsePullArgs(['--staging'])
+    expect(result.name).toBeUndefined()
+    expect(result.staging).toBe(true)
+  })
+
+  it('leaves name undefined when args are empty', () => {
+    const result = parsePullArgs([])
+    expect(result.name).toBeUndefined()
+  })
+})
+
+describe('isNonEmptyDirectory', () => {
+  it('is false for a directory that does not exist', () => {
+    expect(isNonEmptyDirectory(path.join(os.tmpdir(), 'myth-does-not-exist-xyz'))).toBe(false)
+  })
+
+  it('is false for an existing empty directory', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'myth-empty-'))
+    try {
+      expect(isNonEmptyDirectory(dir)).toBe(false)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('is true for an existing non-empty directory', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'myth-nonempty-'))
+    try {
+      await writeFile(path.join(dir, 'existing.txt'), 'x')
+      expect(isNonEmptyDirectory(dir)).toBe(true)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('pull', () => {
+  it('prints Usage and does not touch the filesystem when name is missing', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit called')
+    })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(pull([])).rejects.toThrow('process.exit called')
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Usage: myth pull <name>'),
+    )
+
+    exitSpy.mockRestore()
+    errorSpy.mockRestore()
+  })
+
+  it('refuses to pull into an existing non-empty directory', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'myth-pull-guard-'))
+    await writeFile(path.join(dir, 'existing.txt'), 'x')
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit called')
+    })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      await expect(pull(['my-app', '--dir', dir])).rejects.toThrow('process.exit called')
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('non-empty directory'),
+      )
+    } finally {
+      exitSpy.mockRestore()
+      errorSpy.mockRestore()
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })
