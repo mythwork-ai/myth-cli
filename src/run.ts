@@ -1,17 +1,22 @@
 import { createServer } from "vite";
-import type { ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
 import { mythPlugin } from "./myth-plugin.js";
-import { generateLocalPid, hostFramePlugin, loadConfigOrThrow, OrbitConfigError } from "./virtual-html.js";
+import {
+  generateLocalPid,
+  hostFramePlugin,
+  loadConfigOrThrow,
+  OrbitConfigError,
+} from "./virtual-html.js";
+import { resolveStage } from "./stage.js";
 import { exec } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 
-/** Candidate entry files tried in order when `myth run` is invoked
- * without --entry. Matches the conventions in modern mythwork apps:
- * src/main.tsx (tennis, lab-nav), then ts/tsx variants, then the
- * legacy single-file App.tsx layout from older examples. */
+/** Candidate entry files tried in order for LEGACY apps (no index.html of
+ * their own) when `myth run` is invoked without --entry: the original
+ * single-component layout boots a default-exported React component. Modern
+ * apps ship index.html + a self-mounting entry and never need this. */
 const DEFAULT_ENTRY_CANDIDATES = [
   "src/main.tsx",
   "src/main.ts",
@@ -41,61 +46,33 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const cliRoot = path.resolve(__dirname, "../..");
 
-// Every URL prefix the production hosting worker serves. Anything under
-// these paths gets proxied through vite to the backend so the browser
-// hits localhost:5173 (first-party cookies) while the actual response
-// comes from api.orbitcode.app (or a local wrangler override).
-const BACKEND_PREFIXES = [
-  "/provision",
-  "/auth",
-  "/room",
-  "/cas",
-  "/sync",
-  "/publish",
-  "/secrets",
-  "/collab",
-  "/favorites",
-  "/templates",
-  "/billing",
-  "/stats",
-  "/discover",
-  "/dev",
-  "/admin",
-];
+/** Directories never worth scanning for the app's own stylesheets. */
+const CSS_SCAN_SKIP = new Set(["node_modules", "dist", "build", ".git"]);
 
-// Only paths that actually carry WebSocket upgrades need ws:true.
-// Setting ws:true on every prefix makes node-http-proxy hook into the
-// HTTP server's `upgrade` event broadly, which can starve vite's own
-// HMR WebSocket at `/` — the browser console fills with
-// `WebSocket connection to 'ws://localhost:5173/' failed`.
-const WS_PREFIXES = new Set(["/sync", "/collab"]);
-
-function buildBackendProxy(backendOrigin: string): Record<string, ProxyOptions> {
-  const proxy: Record<string, ProxyOptions> = {};
-  const secure = backendOrigin.startsWith("https:");
-  for (const p of BACKEND_PREFIXES) {
-    proxy[p] = {
-      target: backendOrigin,
-      changeOrigin: true,
-      ws: WS_PREFIXES.has(p),
-      secure,
-    };
-  }
-  return proxy;
-}
-
-/** Scan CSS files at the project root for bare @import specifiers (npm packages). */
-function detectCssImports(root: string): string[] {
+/**
+ * Scan the project's CSS files for bare @import specifiers (npm packages),
+ * e.g. `@import "tailwindcss"`. Walks the tree (skipping dependency/build
+ * dirs, depth-bounded) because modern apps keep their stylesheets under
+ * src/styles/, not at the root.
+ */
+function detectCssImports(root: string, depth = 4): string[] {
   const imports = new Set<string>();
   const importRe = /@import\s+["']([^./][^"']*)["']/g;
-  for (const file of readdirSync(root)) {
-    if (file.endsWith(".css")) {
-      const contents = readFileSync(path.join(root, file), "utf-8");
-      for (const match of contents.matchAll(importRe)) {
-        imports.add(match[1]);
+  const walk = (dir: string, remaining: number): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (remaining > 0 && !CSS_SCAN_SKIP.has(entry.name) && !entry.name.startsWith(".")) {
+          walk(path.join(dir, entry.name), remaining - 1);
+        }
+      } else if (entry.name.endsWith(".css")) {
+        const contents = readFileSync(path.join(dir, entry.name), "utf-8");
+        for (const match of contents.matchAll(importRe)) {
+          imports.add(match[1]);
+        }
       }
     }
-  }
+  };
+  walk(root, depth);
   return [...imports];
 }
 
@@ -119,20 +96,13 @@ function resolveCssEntry(pkg: string): string | null {
   }
 }
 
-function resolveCollabUrl(backendOrigin: string): string {
-  if (process.env.ORBIT_COLLAB_URL) return process.env.ORBIT_COLLAB_URL;
-  if (backendOrigin.includes("localhost")) return "ws://localhost:1234";
-  return "wss://collab.orbitcode.ai";
-}
-
 export async function startServer(
   start: string,
   requestedEntry?: string,
   requestedPort?: number,
+  requestedStage?: string,
 ) {
-  const backendOrigin = process.env.MYTH_BACKEND_ORIGIN ?? "https://api.orbitcode.app";
-  const backendProxy = buildBackendProxy(backendOrigin);
-  const collabUrl = resolveCollabUrl(backendOrigin);
+  const stage = resolveStage(requestedStage);
 
   let loaded;
   try {
@@ -149,7 +119,12 @@ export async function startServer(
   // run` resolves to the project workspace, not the subdirectory we
   // were invoked from.
   const root = loaded.root;
-  const entry = resolveEntry(root, requestedEntry);
+
+  // Modern apps ship their own index.html — that document IS the inner app
+  // (vite serves it on the app.localhost origin). Only legacy component apps
+  // need an entry resolved for the virtual shell.
+  const hasOwnIndexHtml = existsSync(path.join(root, "index.html"));
+  const entry = hasOwnIndexHtml ? null : resolveEntry(root, requestedEntry);
 
   // An unprovisioned app (no projectId in config — AGE-78) still needs a pid
   // for the local kernel; derive a stable ephemeral one (never persisted). A
@@ -160,7 +135,7 @@ export async function startServer(
     hostFramePlugin({
       projectId: devProjectId,
       projectName: config.name,
-      backendOrigin,
+      stage,
       entry,
     }),
     mythPlugin(),
@@ -190,25 +165,32 @@ export async function startServer(
     plugins,
     define: {
       // @orbitcode/collab/collab-funcs checks `typeof __ORBIT_COLLAB_URL__
-      // === 'string'` at runtime and uses it instead of deriving from
-      // the page origin. Lets the app reach the prod collab server
-      // even when the host page is localhost:5173.
-      __ORBIT_COLLAB_URL__: JSON.stringify(collabUrl),
+      // === 'string'` at runtime and uses it instead of deriving from the
+      // page origin. Lets an app that bundles the collab client reach the
+      // stage's collab server from the app.localhost origin.
+      __ORBIT_COLLAB_URL__: JSON.stringify(stage.collabUrl),
     },
     resolve: {
       alias: {
-        "@/": root + "/",
+        // The conventional `@/` alias: `src/` when the app has one (the
+        // vite/shadcn convention modern apps like landing rely on), else the
+        // project root (legacy single-dir apps).
+        "@/": path.join(root, existsSync(path.join(root, "src")) ? "src" : ".") + "/",
         ...cssAliases,
       },
     },
     server: {
-      // `--port` (CLI) > config.devPort > vite default (5173). Tennis
-      // and lab-nav pre-myth-cli ran on specific ports registered in
-      // the Google OAuth client's Authorized JavaScript Origins; using
-      // a different port produces Error 400: origin_mismatch on sign-in.
+      // `--port` (CLI) > config.devPort > vite default (5173). Some apps'
+      // Google OAuth clients only authorize specific localhost:<port>
+      // origins; using a different port produces Error 400: origin_mismatch
+      // on sign-in.
       port: requestedPort ?? (typeof config.devPort === "number" ? config.devPort : undefined),
       strictPort: requestedPort !== undefined || typeof config.devPort === "number",
-      proxy: backendProxy,
+      // One listener serves the whole production-shaped host split:
+      // localhost (outer wrapper), app.localhost (the app), api.localhost /
+      // auth.localhost (proxied backends). *.localhost resolves to loopback
+      // per RFC 6761, so no /etc/hosts edits.
+      allowedHosts: [".localhost"],
       fs: {
         allow: [root, cliRoot],
       },
@@ -216,13 +198,16 @@ export async function startServer(
   });
 
   await server.listen();
-  console.log(`[myth] backend proxy → ${backendOrigin}`);
-  console.log(`[myth] collab url   → ${collabUrl}`);
+  console.log(`[myth] stage        → ${stage.label}`);
+  console.log(`[myth] api/auth     → ${stage.apiOrigin} / ${stage.authOrigin} (proxied on *.localhost)`);
+  console.log(`[myth] collab url   → ${stage.collabUrl}`);
   console.log(`[myth] project: ${config.name} (${devProjectId}${config.projectId ? "" : " — local, unprovisioned"})`);
   server.printUrls();
 
+  // Only auto-open when a human is at the terminal — background/automation
+  // runs (CI, agents, scripts) must not hijack the user's browser.
   const url = server.resolvedUrls?.local[0];
-  if (url) {
+  if (url && process.stdout.isTTY) {
     exec(`open "${url}"`);
   }
 }

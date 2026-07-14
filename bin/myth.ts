@@ -58,8 +58,14 @@ Usage:
                [--dir <path>]   Uses the same auth as publish.
   myth init                      Create myth.config.json (name only) in the
                                  current directory; first publish provisions the id
-  myth run [--entry <file>]      Run the current directory as a mythwork app
-             [--port <port>]     (default entry: src/main.tsx, src/App.tsx, App.tsx)
+  myth run [--entry <file>]      Run the current directory as a mythwork app,
+             [--port <port>]     wrapped in the SAME host frame a deployed app
+             [--stage <name>]    gets (outer wrapper on localhost, the app on
+                                 app.localhost, api/auth proxied on *.localhost).
+                                 --stage prod (default) | staging | local
+                                 (local = the mythwork repo's \`make dev\` stack).
+                                 --entry only applies to legacy apps without
+                                 their own index.html.
   myth publish [--name <name>]   Upload the current app's SOURCE to myth.work;
                [--default]       it compiles at the edge (no local build).
                [--staging]       --default (or --name ~apex) also sets the
@@ -250,13 +256,33 @@ export async function pull(pullArgs: string[]) {
 async function run(runArgs: string[]) {
   const explicitEntry = parseEntry(runArgs);
   const explicitPort = parsePort(runArgs);
+  const explicitStage = parseStage(runArgs);
   const cwd = process.cwd();
   // startServer walks up from `cwd` to find myth.config.json and
   // anchors vite to that directory. Entry resolution happens there too
   // (so `myth run --entry src/main.tsx` is interpreted relative to the
   // workspace root, not the subdirectory we were invoked from).
   const { startServer } = await import("../src/run.js");
-  await startServer(cwd, explicitEntry, explicitPort);
+  await startServer(cwd, explicitEntry, explicitPort, explicitStage);
+}
+
+/** Parse `--stage <prod|staging|local>` (validated in src/stage.ts). */
+function parseStage(runArgs: string[]): string | undefined {
+  for (let i = 0; i < runArgs.length; i++) {
+    const a = runArgs[i];
+    if (a === "--stage") {
+      const value = runArgs[i + 1];
+      if (!value) {
+        console.error("--stage requires a value (prod | staging | local)");
+        process.exit(1);
+      }
+      return value;
+    }
+    if (a.startsWith("--stage=")) {
+      return a.slice("--stage=".length);
+    }
+  }
+  return undefined;
 }
 
 /**

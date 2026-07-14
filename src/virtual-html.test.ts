@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { generateLocalPid, loadConfigOrThrow, OrbitConfigError } from './virtual-html.js'
+import { generateLocalPid, generateWrapperHtml, isAssetUrl, loadConfigOrThrow, OrbitConfigError } from './virtual-html.js'
 
 describe('loadConfigOrThrow projectId optionality (AGE-78)', () => {
   let root = ''
@@ -114,5 +114,58 @@ describe('generateLocalPid (shared, AGE-78)', () => {
     expect(a).toMatch(/^[a-f0-9]{17}$/)
     expect(generateLocalPid('tennis::/x')).toBe(a) // deterministic
     expect(generateLocalPid('tennis::/y')).not.toBe(a) // seed-sensitive
+  })
+})
+
+describe('generateWrapperHtml (deployment-shaped dev wrapper)', () => {
+  const stage = {
+    name: 'prod',
+    label: 'myth.work (prod)',
+    apiOrigin: 'https://api.myth.work',
+    authOrigin: 'https://auth.myth.work',
+    serveOrigin: 'https://myth.work',
+    collabUrl: 'wss://collab.myth.work',
+  } as const
+  const html = generateWrapperHtml(
+    { projectId: 'abc123abc123abc12', projectName: 'Lab Nav', stage, port: '5173' },
+    { name: 'Lab Nav' },
+  )
+
+  it('loads the host-frame bundle from the proxied /_hf path', () => {
+    expect(html).toContain('<script src="/_hf/host-frame.js"></script>')
+  })
+
+  it('frames the app on the app.localhost origin, same path scheme (no /app prefix)', () => {
+    expect(html).toContain('"http://app.localhost:5173"')
+    expect(html).not.toContain("'/app'")
+  })
+
+  it('boots __hf.init with the proxied backend origins and the stage collab url', () => {
+    expect(html).toContain('iframeOrigin: "http://app.localhost:5173"')
+    expect(html).toContain('authOrigin: "http://auth.localhost:5173"')
+    expect(html).toContain(
+      'backendOrigins: {"api":"http://api.localhost:5173","auth":"http://auth.localhost:5173","collab":"wss://collab.myth.work"}',
+    )
+    expect(html).toContain('appId: "abc123abc123abc12"')
+  })
+
+  it('keeps the production sandbox attributes on the app frame', () => {
+    expect(html).toContain('sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"')
+  })
+})
+
+describe('isAssetUrl', () => {
+  it('lets vite-internal and extensioned URLs through', () => {
+    expect(isAssetUrl('/@vite/client')).toBe(true)
+    expect(isAssetUrl('/@id/__x00__virtual:myth-entry')).toBe(true)
+    expect(isAssetUrl('/node_modules/.vite/deps/react.js')).toBe(true)
+    expect(isAssetUrl('/src/main.tsx')).toBe(true)
+    expect(isAssetUrl('/styles.css?t=123')).toBe(true)
+  })
+
+  it('treats document-ish routes as non-assets (SPA fallback territory)', () => {
+    expect(isAssetUrl('/')).toBe(false)
+    expect(isAssetUrl('/project/abc123')).toBe(false)
+    expect(isAssetUrl('/discover?tags=ai')).toBe(false)
   })
 })

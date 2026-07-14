@@ -2,6 +2,8 @@ import type { Plugin } from "vite";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import type { Stage } from "./stage.js";
+import { classifyHost, proxyRequest } from "./dev-proxy.js";
 
 const VIRTUAL_ENTRY_ID = "virtual:myth-entry";
 const RESOLVED_ENTRY_ID = "\0" + VIRTUAL_ENTRY_ID;
@@ -143,25 +145,41 @@ export function generateLocalPid(seed: string): string {
   return createHash("sha256").update(seed).digest("hex").slice(0, 17).toLowerCase();
 }
 
-interface WrapperOptions {
+export interface WrapperOptions {
   projectId: string;
   projectName: string;
-  backendOrigin: string;
+  stage: Stage;
+  /** Port of the dev listener, taken from the incoming request's Host. */
+  port: string;
 }
 
 /**
- * Outer wrapper HTML served at `/`. It pulls /dev/host-frame.js through
- * the vite proxy (so it ends up at the backend), then iframes the app
- * at /app/<original-path>. The host-frame init script wires up
- * iframeOrigin + authOrigin to the page origin so all RPCs go through
- * the proxy (first-party cookies on localhost:5173).
+ * Outer host-frame wrapper HTML, served for EVERY top-level document request
+ * on the `localhost` (outer) host — mirroring workers/serve, which renders
+ * the outer wrapper unconditionally around every deployed app. The app's own
+ * index.html is never the outer document; it loads inside the iframe from the
+ * `app.localhost` origin, the dev parallel of the `{tree}{token}.{zone}`
+ * inner origin (same listener, but a genuinely distinct browser origin).
+ *
+ * The host-frame bundle loads from /_hf/host-frame.js — proxied to the target
+ * stage's serve worker, so the wrapper always boots the exact bundle version
+ * that stage runs. The bundle's prelude sets window.__OC_HOST_CONFIG
+ * (googleClientId) before `__hf` is defined.
  */
-function generateWrapperHtml(opts: WrapperOptions, config: OrbitConfig): string {
+export function generateWrapperHtml(opts: WrapperOptions, config: OrbitConfig): string {
   const title = config.name ?? "OrbitCode App";
   const icon = config.icon ?? "\u{1FA90}";
   const bgColor = config.defaultTheme === "light" ? "#ffffff" : "#0e1418";
+  const appOrigin = `http://app.localhost:${opts.port}`;
+  const authOrigin = `http://auth.localhost:${opts.port}`;
+  const apiOrigin = `http://api.localhost:${opts.port}`;
   const projectIdJson = JSON.stringify(opts.projectId);
   const projectNameJson = JSON.stringify(opts.projectName);
+  const backendOriginsJson = JSON.stringify({
+    api: apiOrigin,
+    auth: authOrigin,
+    collab: opts.stage.collabUrl,
+  });
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -176,30 +194,28 @@ function generateWrapperHtml(opts: WrapperOptions, config: OrbitConfig): string 
     iframe#app-frame { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; }
   </style>
   <!--
-    Loaded RELATIVE so vite's proxy forwards it to the backend
-    (api.orbitcode.app by default; override with MYTH_BACKEND_ORIGIN).
-    The worker inlines window.__OC_HOST_CONFIG into this bundle so
-    googleClientId is available without a separate fetch.
+    Same bundle the target stage's serve worker inlines into deployed
+    outer pages; /_hf/* is proxied there, so no version skew. Its prelude
+    sets window.__OC_HOST_CONFIG (googleClientId).
   -->
-  <script src="/dev/host-frame.js"></script>
+  <script src="/_hf/host-frame.js"></script>
 </head>
 <body>
   <iframe id="app-frame"
     sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
     allow="autoplay; fullscreen"></iframe>
   <script>
-    // Build inner iframe URL from outer pathname so /match/xyz reaches
-    // the app at /app/match/xyz. Runs before the iframe loads because
-    // it has no static src attribute. Mirror tennis's wrapper logic.
+    // The inner app serves the SAME path scheme as the outer page (single-SPA
+    // layout — production passes pathAndSearch straight through to the inner
+    // origin), so forward the outer URL verbatim to the app origin.
     (function () {
-      var outerPath = location.pathname || '/';
-      var src = outerPath.indexOf('/app') === 0
-        ? outerPath + location.search + location.hash
-        : '/app' + (outerPath === '/' ? '/' : outerPath) + location.search + location.hash;
+      var src = ${JSON.stringify(appOrigin)}
+        + (location.pathname || '/') + location.search + location.hash;
       document.getElementById('app-frame').src = src;
     })();
 
-    // Sync outer URL bar when the inner App posts 'oc-navigate'.
+    // Sync the outer URL bar when the inner app posts 'oc-navigate' (apps
+    // push their canonical share URLs; the outer address bar mirrors them).
     window.addEventListener('message', function (e) {
       var frame = document.getElementById('app-frame');
       if (e.source !== (frame && frame.contentWindow)) return;
@@ -210,20 +226,20 @@ function generateWrapperHtml(opts: WrapperOptions, config: OrbitConfig): string 
       history.pushState(null, '', p);
     });
 
-    // Boot the host-frame bundle. iframeOrigin + authOrigin both point
-    // at the page origin so every fetch travels through the proxy.
     function bootHostFrame() {
       var hf = window.__hf;
       if (!hf) {
-        console.error('[myth] host-frame bundle not loaded from /dev/host-frame.js');
+        console.error('[myth] host-frame bundle not loaded from /_hf/host-frame.js. Stage down?');
         return;
       }
       var serverConfig = window.__OC_HOST_CONFIG || {};
       hf.init({
         projectId: ${projectIdJson},
         projectName: ${projectNameJson},
-        iframeOrigin: location.origin,
-        authOrigin: location.origin,
+        appId: ${projectIdJson},
+        iframeOrigin: ${JSON.stringify(appOrigin)},
+        authOrigin: ${JSON.stringify(authOrigin)},
+        backendOrigins: ${backendOriginsJson},
         googleClientId: serverConfig.googleClientId,
       });
     }
@@ -237,7 +253,7 @@ function generateWrapperHtml(opts: WrapperOptions, config: OrbitConfig): string 
           bootHostFrame();
         } else if (++attempts > 50) {
           clearInterval(id);
-          console.error('[myth] host-frame bundle never loaded after 5s. Backend down?');
+          console.error('[myth] host-frame bundle never loaded after 5s. Stage down?');
         }
       }, 100);
     }
@@ -247,10 +263,12 @@ function generateWrapperHtml(opts: WrapperOptions, config: OrbitConfig): string 
 }
 
 /**
- * Inner-app HTML served at /app/ (and all SPA fallbacks under /app/).
- * Imports the app's entry as a module via vite's normal transform.
+ * Inner-app HTML for LEGACY apps that ship no index.html of their own (the
+ * original single-component `myth run` layout). Served on the app.localhost
+ * origin; boots the resolved entry via vite's virtual module. Modern apps
+ * (own index.html) never see this — vite serves their real document.
  */
-function generateAppHtml(config: OrbitConfig, entry: string): string {
+export function generateAppHtml(config: OrbitConfig): string {
   const title = config.name ?? "OrbitCode App";
   const bgColor = config.defaultTheme === "light" ? "#ffffff" : "#000000";
   return `<!DOCTYPE html>
@@ -280,25 +298,41 @@ createRoot(document.getElementById('root')).render(createElement(App));
 `;
 }
 
-interface HostFramePluginOptions {
+/** True for vite-internal / asset-ish URLs that must reach vite untouched. */
+export function isAssetUrl(url: string): boolean {
+  return (
+    url.startsWith("/@") || url.startsWith("/node_modules/") || /\.[a-z0-9]+($|\?)/i.test(url)
+  );
+}
+
+export interface HostFramePluginOptions {
   projectId: string;
   projectName: string;
-  backendOrigin: string;
-  entry: string;
+  stage: Stage;
+  /**
+   * Entry file for LEGACY apps with no root index.html (default-export
+   * component layout). `null` for modern apps — their own index.html is the
+   * inner document and no virtual entry is mounted.
+   */
+  entry: string | null;
 }
 
 /**
- * Two-page wrapper:
- *   - GET /          → outer host-frame parent (iframes /app/)
- *   - GET /app/*     → inner app shell that boots <entry>
+ * Deployment-shaped dev host, mirroring the production host split on
+ * `*.localhost` subdomains of the one vite listener:
  *
- * /app/<anything> non-asset requests get rewritten to /app/ so vite
- * always serves the app shell HTML; the inner App reads the real path
- * from window.location.pathname (matching the tennis/lab-nav pattern).
+ *   localhost:{port}       → outer host-frame wrapper (ALWAYS — like
+ *                            workers/serve, regardless of the app's own
+ *                            index.html)
+ *   app.localhost:{port}   → the app document (vite-served index.html, or
+ *                            the legacy virtual-entry shell)
+ *   api.localhost:{port}   → proxied to the stage's api host
+ *   auth.localhost:{port}  → proxied to the stage's auth host
+ *   /_hf/*, /_oc/*         → proxied to the stage's serve worker
  */
 export function hostFramePlugin(opts: HostFramePluginOptions): Plugin {
   let root: string;
-  const virtualEntry = buildVirtualEntry(opts.entry);
+  const virtualEntry = opts.entry === null ? null : buildVirtualEntry(opts.entry);
 
   return {
     name: "myth-host-frame",
@@ -309,66 +343,71 @@ export function hostFramePlugin(opts: HostFramePluginOptions): Plugin {
     },
 
     resolveId(id) {
-      if (id === VIRTUAL_ENTRY_ID) {
+      if (id === VIRTUAL_ENTRY_ID && virtualEntry !== null) {
         return RESOLVED_ENTRY_ID;
       }
       return null;
     },
 
     load(id) {
-      if (id === RESOLVED_ENTRY_ID) {
+      if (id === RESOLVED_ENTRY_ID && virtualEntry !== null) {
         return virtualEntry;
       }
       return null;
     },
 
     configureServer(server) {
-      // SPA fallback for /app/* — rewrite non-asset URLs to /app/ so
-      // vite serves the app shell on every nested route.
-      server.middlewares.use((req, _res, next) => {
-        const url = req.url ?? "";
-        if (
-          url.startsWith("/app/") &&
-          url !== "/app/" &&
-          !/\.[a-z0-9]+($|\?)/i.test(url)
-        ) {
-          req.url = "/app/";
-        }
-        next();
-      });
-
       server.middlewares.use((req, res, next) => {
-        const url = req.url ?? "";
-        const config = readConfigSafe(root);
+        const url = req.url ?? "/";
+        const kind = classifyHost(req.headers.host);
 
-        // Outer host-frame parent
-        if (url === "/" || url === "/index.html") {
-          const realHtml = path.join(root, "index.html");
-          if (!existsSync(realHtml)) {
-            res.setHeader("Content-Type", "text/html");
-            res.end(
-              generateWrapperHtml(
-                {
-                  projectId: opts.projectId,
-                  projectName: opts.projectName,
-                  backendOrigin: opts.backendOrigin,
-                },
-                config,
-              ),
-            );
-            return;
-          }
+        // Backend hosts — mirror the production hostname split.
+        if (kind === "api") {
+          void proxyRequest(req, res, opts.stage.apiOrigin);
+          return;
+        }
+        if (kind === "auth") {
+          void proxyRequest(req, res, opts.stage.authOrigin);
+          return;
         }
 
-        // Inner app shell — anything under /app/ that vite would
-        // otherwise 404 on (no app/index.html in the workspace).
-        if (url === "/app/" || url === "/app" || url === "/app/index.html") {
-          const realHtml = path.join(root, "app", "index.html");
-          if (!existsSync(realHtml)) {
-            res.setHeader("Content-Type", "text/html");
-            res.end(generateAppHtml(config, opts.entry));
-            return;
-          }
+        // Serve-worker paths, on any remaining host: the host-frame bundle +
+        // first-party token (/_hf/*) for the outer page, and the preview
+        // compiler (/_oc/*) for inner apps like myth-ide.
+        if (url.startsWith("/_hf/") || url.startsWith("/_oc/")) {
+          void proxyRequest(req, res, opts.stage.serveOrigin);
+          return;
+        }
+
+        // Outer host: every document request renders the wrapper —
+        // production's serve worker wraps unconditionally, so we do too.
+        if (kind === "outer") {
+          const port = (req.headers.host ?? "").split(":")[1] ?? "80";
+          const config = readConfigSafe(root);
+          res.setHeader("Content-Type", "text/html");
+          res.end(
+            generateWrapperHtml(
+              {
+                projectId: opts.projectId,
+                projectName: opts.projectName,
+                stage: opts.stage,
+                port,
+              },
+              config,
+            ),
+          );
+          return;
+        }
+
+        // App host, legacy layout: no real index.html to serve, so answer
+        // every document-ish URL with the virtual-entry shell (SPA fallback
+        // included). Modern apps fall through to vite, whose own SPA
+        // fallback serves their real index.html.
+        if (kind === "app" && virtualEntry !== null && !isAssetUrl(url)) {
+          const config = readConfigSafe(root);
+          res.setHeader("Content-Type", "text/html");
+          res.end(generateAppHtml(config));
+          return;
         }
 
         next();
@@ -389,7 +428,9 @@ function readConfigSafe(root: string): OrbitConfig {
   // AGE-97: no myth.config.json — fall back to package.json's "mythwork" block
   // so the dev wrapper still gets the right title/theme.
   try {
-    return configFromPackageJson(JSON.parse(readFileSync(path.join(root, "package.json"), "utf-8")));
+    return configFromPackageJson(
+      JSON.parse(readFileSync(path.join(root, "package.json"), "utf-8")),
+    );
   } catch {
     return {};
   }
