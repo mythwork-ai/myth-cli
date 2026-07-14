@@ -69,7 +69,9 @@ describe('publishCommand pinned-projectId fallback (AGE-81)', () => {
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
       calls.push({ url: u, method, body })
       if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
-      if (u.endsWith('/project/provision')) return jsonRes({ projectId: 'pPROVISIONEDxyz789', alias: 'tennis-demo-ab12', anonymous: false })
+      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
+      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTEDxyz7890000'] })
+      if (u.endsWith('/project/claim')) return jsonRes({ projectId: 'pPROVISIONEDxyz789', alias: 'tennis-demo-ab12' })
       if (u.endsWith('/publish')) {
         finalizeCount++
         if (finalizeCount === 1) {
@@ -83,10 +85,10 @@ describe('publishCommand pinned-projectId fallback (AGE-81)', () => {
 
     await publishCommand({ cwd: root, shortName: 'tennis-demo', staging: true, force: true })
 
-    // (1) provision called with the slugified localId + projectName (the fallback)
-    const prov = calls.find(c => c.url.endsWith('/project/provision'))
-    expect(prov).toBeDefined()
-    expect(prov?.body).toEqual({ localId: 'tennis-demo', projectName: 'tennis-demo' })
+    // (1) fallback claim carries the projectName (the caller owned nothing yet)
+    const claim = calls.find(c => c.url.endsWith('/project/claim'))
+    expect(claim).toBeDefined()
+    expect(claim?.body).toEqual({ projectId: 'pMINTEDxyz7890000', projectName: 'tennis-demo' })
 
     // (2) AGE-81: the committed pin is NOT rewritten — it stays exactly as authored.
     const cfg = JSON.parse(await readFile(path.join(root, 'myth.config.json'), 'utf-8')) as {
@@ -96,26 +98,29 @@ describe('publishCommand pinned-projectId fallback (AGE-81)', () => {
     expect(cfg.projectId).toBe('notmine0000000000')
     expect(cfg.name).toBe('tennis-demo')
 
-    // (3) two finalize calls: first the pinned pid, second the provisioned own pid
+    // (3) two finalize calls: first the pinned pid, second the resolved own pid
     const finals = calls.filter(c => c.url.endsWith('/publish') && c.method === 'POST')
     expect(finals).toHaveLength(2)
     expect(finals[0].body?.projectId).toBe('notmine0000000000')
     expect(finals[1].body?.projectId).toBe('pPROVISIONEDxyz789')
   })
 
-  it('pinned pid owned → finalize succeeds first try, no provision, no rewrite', async () => {
-    let provisionCalled = false
+  it('pinned pid owned → finalize succeeds first try, no resolve, no rewrite', async () => {
+    let resolveCalled = false
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url)
       if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
-      if (u.endsWith('/project/provision')) { provisionCalled = true; return jsonRes({ projectId: 'x' }) }
+      if (u.endsWith('/projects') || u.endsWith('/project/pool?n=1') || u.endsWith('/project/claim')) {
+        resolveCalled = true
+        return jsonRes({ projectId: 'x', projects: [], ids: ['x'] })
+      }
       if (u.endsWith('/publish')) return jsonRes({ commit: 'a'.repeat(64), tree: 'b'.repeat(64), canonical: 'c'.repeat(52), alias: 'tennis-demo' })
       throw new Error(`unexpected fetch: ${init?.method ?? 'GET'} ${u}`)
     }) as unknown as typeof fetch
     vi.stubGlobal('fetch', fakeFetch)
 
     await publishCommand({ cwd: root, shortName: 'tennis-demo', staging: true, force: true })
-    expect(provisionCalled).toBe(false)
+    expect(resolveCalled).toBe(false)
     const cfg = JSON.parse(await readFile(path.join(root, 'myth.config.json'), 'utf-8')) as { projectId: string }
     expect(cfg.projectId).toBe('notmine0000000000') // untouched
   })
@@ -125,7 +130,9 @@ describe('publishCommand pinned-projectId fallback (AGE-81)', () => {
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url)
       if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
-      if (u.endsWith('/project/provision')) return jsonRes({ projectId: 'pPROV999', anonymous: false })
+      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
+      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTED999000000'] })
+      if (u.endsWith('/project/claim')) return jsonRes({ projectId: 'pPROV999' })
       if (u.endsWith('/publish')) {
         finalizeCount++
         return jsonRes({ error: 'projectId ownership mismatch', code: 'project_ownership' }, 403)
@@ -137,7 +144,7 @@ describe('publishCommand pinned-projectId fallback (AGE-81)', () => {
     await expect(
       publishCommand({ cwd: root, shortName: 'tennis-demo', staging: true, force: true }),
     ).rejects.toMatchObject({ code: 'not_owner' })
-    // provision fired once, finalize attempted exactly twice — NO infinite loop
+    // resolve fired once, finalize attempted exactly twice — NO infinite loop
     expect(finalizeCount).toBe(2)
   })
 })
@@ -174,7 +181,9 @@ describe('publishCommand name-only resolve-via-provision (AGE-81)', () => {
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
       calls.push({ url: u, method: init?.method ?? 'GET', body })
       if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
-      if (u.endsWith('/project/provision')) return jsonRes({ projectId: 'pRESOLVED12345', alias: 'tennis-demo-zz', anonymous: false })
+      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
+      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTED12345zzzz'] })
+      if (u.endsWith('/project/claim')) return jsonRes({ projectId: 'pRESOLVED12345', alias: 'tennis-demo-zz' })
       if (u.endsWith('/publish')) return jsonRes({ commit: 'a'.repeat(64), tree: 'b'.repeat(64), canonical: 'c'.repeat(52), alias: 'tennis-demo' })
       throw new Error(`unexpected fetch: ${u}`)
     }) as unknown as typeof fetch
@@ -182,9 +191,9 @@ describe('publishCommand name-only resolve-via-provision (AGE-81)', () => {
 
     await publishCommand({ cwd: root, shortName: 'tennis-demo', staging: true, force: true })
 
-    // provision is the lookup: called once with the slugified localId + name
-    const prov = calls.find(c => c.url.endsWith('/project/provision'))
-    expect(prov?.body).toEqual({ localId: 'tennis-demo', projectName: 'tennis-demo' })
+    // resolve claims the project: claim carries the projectName
+    const claim = calls.find(c => c.url.endsWith('/project/claim'))
+    expect(claim?.body).toEqual({ projectId: 'pMINTED12345zzzz', projectName: 'tennis-demo' })
 
     // AGE-81: NO write-back — the committed config stays name-only.
     const cfg = JSON.parse(await readFile(path.join(root, 'myth.config.json'), 'utf-8')) as {
@@ -198,7 +207,7 @@ describe('publishCommand name-only resolve-via-provision (AGE-81)', () => {
     expect(finals[0].body?.projectId).toBe('pRESOLVED12345')
   })
 
-  it('MYTH_PROJECT_ID pins a name-only config → finalize directly, NO provision, config stays name-only (the CI path)', async () => {
+  it('MYTH_PROJECT_ID pins a name-only config → finalize directly, NO resolve, config stays name-only (the CI path)', async () => {
     await scaffold({ name: 'tennis-demo' }) // committed config is name-only
     const origPid = process.env.MYTH_PROJECT_ID
     process.env.MYTH_PROJECT_ID = 'envPINnedpid12345' // the per-stage pid the OIDC identity owns
@@ -209,7 +218,9 @@ describe('publishCommand name-only resolve-via-provision (AGE-81)', () => {
         const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
         calls.push({ url: u, method: init?.method ?? 'GET', body })
         if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
-        if (u.endsWith('/project/provision')) return jsonRes({ projectId: 'shouldNotProvision' })
+        if (u.endsWith('/projects')) return jsonRes({ projects: [] })
+        if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['shouldNotMint000'] })
+        if (u.endsWith('/project/claim')) return jsonRes({ projectId: 'shouldNotClaim' })
         if (u.endsWith('/publish')) return jsonRes({ commit: 'a'.repeat(64), tree: 'b'.repeat(64), canonical: 'c'.repeat(52), alias: 'tennis-demo' })
         throw new Error(`unexpected fetch: ${u}`)
       }) as unknown as typeof fetch
@@ -217,9 +228,10 @@ describe('publishCommand name-only resolve-via-provision (AGE-81)', () => {
 
       await publishCommand({ cwd: root, shortName: 'tennis-demo', staging: true, force: true })
 
-      // the env pin goes STRAIGHT to finalize — the provision endpoint (which
-      // rejects OIDC) is never touched
-      expect(calls.find(c => c.url.endsWith('/project/provision'))).toBeUndefined()
+      // the env pin goes STRAIGHT to finalize — the resolve endpoints (which
+      // reject/mint under OIDC) are never touched
+      expect(calls.find(c => c.url.endsWith('/project/claim'))).toBeUndefined()
+      expect(calls.find(c => c.url.endsWith('/project/pool?n=1'))).toBeUndefined()
       const finals = calls.filter(c => c.url.endsWith('/publish') && c.method === 'POST')
       expect(finals).toHaveLength(1)
       expect(finals[0].body?.projectId).toBe('envPINnedpid12345')
