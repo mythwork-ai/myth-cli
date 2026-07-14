@@ -24,12 +24,17 @@
   "devDependencies": {
     "@types/node": "^22.15.29",
     "typescript": "^5.8.3",
-    "vitest": "^2.1.9"
+    "vitest": "^4.1.10"
   },
   "files": [
     "dist"
   ],
   "engines": {
     "node": ">=18"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.21.5": true,
+    "fsevents@2.3.3": true
   }
 }
