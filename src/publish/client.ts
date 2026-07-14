@@ -367,9 +367,27 @@ export async function mapErrorResponse(
     const text = await res.text()
     if (text) {
       try {
-        const j = JSON.parse(text) as { error?: unknown; code?: unknown }
+        const j = JSON.parse(text) as { error?: unknown; code?: unknown; detail?: unknown }
         if (typeof j.error === 'string') serverMsg = j.error
         if (typeof j.code === 'string') serverCode = j.code
+        // The worker attaches a structured `detail` on failures the top-level
+        // `error` can't describe (e.g. a 422 "compile failed" whose detail is
+        // the offending file + unresolved specifier). Surface it so the user
+        // sees WHAT failed, not just that something did.
+        if (j.detail != null) {
+          const d = j.detail as { message?: unknown; path?: unknown; specifier?: unknown }
+          const detailStr =
+            typeof j.detail === 'string'
+              ? j.detail
+              : [
+                  typeof d.message === 'string' ? d.message : undefined,
+                  typeof d.path === 'string' ? `in ${d.path}` : undefined,
+                  typeof d.specifier === 'string' ? `(${d.specifier})` : undefined,
+                ]
+                  .filter(Boolean)
+                  .join(' ') || JSON.stringify(j.detail)
+          serverMsg = serverMsg ? `${serverMsg} — ${detailStr}` : detailStr
+        }
       } catch {
         serverMsg = text
       }
