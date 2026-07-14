@@ -24,9 +24,30 @@ cd mythwork-logo
 myth run
 ```
 
-Opens http://localhost:5173 with HMR.
+Opens http://localhost:5173 with HMR — wrapped in the **same host frame a
+deployed app gets**. `myth run` simulates deployment: the outer page on
+`localhost` boots the target stage's real host-frame bundle (fetched from its
+serve worker, so there's no version skew), your app loads inside the iframe
+from `app.localhost` (a genuinely distinct origin, like the `{tree}{token}`
+inner origin in production), and every platform call travels over the same
+`oc-ping`/`oc-init` MessagePort handshake `@mythwork/sdk`'s `connect()` runs
+in production. `api.localhost` / `auth.localhost` proxy to the stage's api and
+auth hosts so cookies stay first-party (`*.localhost` is same-site with
+`localhost` and resolves to loopback per RFC 6761 — no `/etc/hosts` edits).
 
-By default `myth run` looks for `src/main.tsx`, then `src/main.ts`, then `src/App.tsx`, then `App.tsx`. Use `--entry` to point at a different file:
+Pick the backend stack with `--stage`:
+
+```bash
+myth run                  # myth.work (prod — matches `myth publish`'s default)
+myth run --stage staging  # llama.space
+myth run --stage local    # the mythwork repo's `make dev` stack (:8801/:8802/:1234)
+```
+
+Apps that ship their own `index.html` (all modern mythwork apps) are served
+as-is inside the frame. Legacy single-component apps (no `index.html`,
+default-exported `App`) still work: `myth run` looks for `src/main.tsx`, then
+`src/main.ts`, then `src/App.tsx`, then `App.tsx`. Use `--entry` to point at a
+different file:
 
 ```bash
 myth run --entry MyApp.tsx
@@ -141,7 +162,7 @@ teammate.
 | `myth clone <name>` | Clone `https://github.com/mythwork-ai/<name>` into the current directory |
 | `myth pull <name> [--dir <path>]` | Reconstruct a published app's current source into a new local directory |
 | `myth init` | Create a new `myth.config.json` in the current directory |
-| `myth run [--entry <file>] [--port <port>]` | Start the Vite dev server (port 5173 by default) |
+| `myth run [--entry <file>] [--port <port>] [--stage <name>]` | Run the app in a deployment-shaped host frame (port 5173; stage prod / staging / local) |
 | `myth publish [flags]` | Upload source + publish to `myth.work` (or staging); compiles at the edge |
 | `myth unpublish --name <shortName>` | Take down a published app (owner-gated) |
 | `myth help` | Show the help text |
