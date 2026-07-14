@@ -9,6 +9,13 @@ git clone https://github.com/mythwork-ai/myth-cli.git
 cd myth-cli && npm install && npm link
 ```
 
+`npm link` symlinks this checkout's `myth` binary onto your global `$PATH`, so
+`myth` anywhere now runs your local `dist/bin/myth.js` (rebuilt via the
+`prepare` script). Re-run `npm link` after pulling or making local changes to
+pick up a rebuild. Other mythwork repos that shell out to `myth run` directly
+(e.g. myth-agent's eval harness) require this link step first — if a caller
+can't find `myth` on `$PATH`, run `npm link` here.
+
 ## Example
 
 ```bash
