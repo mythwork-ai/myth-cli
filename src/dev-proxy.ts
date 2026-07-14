@@ -61,6 +61,23 @@ export function upstreamHeaders(req: IncomingMessage): Headers {
 }
 
 /**
+ * Replace a CSP's `frame-ancestors` sources with the local dev wrapper
+ * origins (any-port localhost — CSP host-sources allow a `*` port). Applied
+ * only to proxied responses on this machine's own dev listener; directives
+ * other than frame-ancestors pass through untouched.
+ */
+export function rewriteFrameAncestorsForDev(csp: string): string {
+  return csp
+    .split(";")
+    .map(d =>
+      d.trim().toLowerCase().startsWith("frame-ancestors")
+        ? " frame-ancestors 'self' http://localhost:* http://127.0.0.1:*"
+        : d,
+    )
+    .join(";");
+}
+
+/**
  * Forward `req` to `${upstreamOrigin}${req.url}` and stream the response
  * back. Redirects are NOT followed — the browser must see them (OAuth
  * round-trips). The response's Set-Cookie headers pass through verbatim:
@@ -105,6 +122,17 @@ export async function proxyRequest(
     // fetch already decompressed the body; the original encoding headers
     // would make the browser mis-parse the re-streamed bytes.
     if (n === "content-encoding" || n === "content-length") return;
+    // The upstream's frame-ancestors is built for its zone origins (e.g. the
+    // auth iframe allows only `'self' https://*.{zone}`) and can't know this
+    // machine's dev wrapper origin — so framing the proxied auth page from
+    // localhost would be CSP-blocked and sign-in dead in dev. The wrapper the
+    // user launched IS the intended framer here, so rewrite the directive to
+    // this local dev origin (everything else in the CSP passes through).
+    if (n === "content-security-policy") {
+      res.setHeader(name, rewriteFrameAncestorsForDev(value));
+      return;
+    }
+    if (n === "x-frame-options") return;
     res.setHeader(name, value);
   });
 

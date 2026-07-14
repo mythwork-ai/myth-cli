@@ -46,18 +46,33 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const cliRoot = path.resolve(__dirname, "../..");
 
-/** Scan CSS files at the project root for bare @import specifiers (npm packages). */
-function detectCssImports(root: string): string[] {
+/** Directories never worth scanning for the app's own stylesheets. */
+const CSS_SCAN_SKIP = new Set(["node_modules", "dist", "build", ".git"]);
+
+/**
+ * Scan the project's CSS files for bare @import specifiers (npm packages),
+ * e.g. `@import "tailwindcss"`. Walks the tree (skipping dependency/build
+ * dirs, depth-bounded) because modern apps keep their stylesheets under
+ * src/styles/, not at the root.
+ */
+function detectCssImports(root: string, depth = 4): string[] {
   const imports = new Set<string>();
   const importRe = /@import\s+["']([^./][^"']*)["']/g;
-  for (const file of readdirSync(root)) {
-    if (file.endsWith(".css")) {
-      const contents = readFileSync(path.join(root, file), "utf-8");
-      for (const match of contents.matchAll(importRe)) {
-        imports.add(match[1]);
+  const walk = (dir: string, remaining: number): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (remaining > 0 && !CSS_SCAN_SKIP.has(entry.name) && !entry.name.startsWith(".")) {
+          walk(path.join(dir, entry.name), remaining - 1);
+        }
+      } else if (entry.name.endsWith(".css")) {
+        const contents = readFileSync(path.join(dir, entry.name), "utf-8");
+        for (const match of contents.matchAll(importRe)) {
+          imports.add(match[1]);
+        }
       }
     }
-  }
+  };
+  walk(root, depth);
   return [...imports];
 }
 
@@ -157,7 +172,10 @@ export async function startServer(
     },
     resolve: {
       alias: {
-        "@/": root + "/",
+        // The conventional `@/` alias: `src/` when the app has one (the
+        // vite/shadcn convention modern apps like landing rely on), else the
+        // project root (legacy single-dir apps).
+        "@/": path.join(root, existsSync(path.join(root, "src")) ? "src" : ".") + "/",
         ...cssAliases,
       },
     },

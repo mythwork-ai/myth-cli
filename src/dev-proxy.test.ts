@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { IncomingMessage } from "node:http";
-import { classifyHost, upstreamHeaders } from "./dev-proxy.js";
+import { classifyHost, rewriteFrameAncestorsForDev, upstreamHeaders } from "./dev-proxy.js";
 
 describe("classifyHost", () => {
   it("maps localhost and 127.0.0.1 (any port) to the outer wrapper", () => {
@@ -50,5 +50,22 @@ describe("upstreamHeaders", () => {
   it("expands multi-value headers", () => {
     const h = upstreamHeaders(req({ accept: ["a", "b"] as never }));
     expect(h.get("accept")).toBe("a, b");
+  });
+});
+
+describe("rewriteFrameAncestorsForDev", () => {
+  it("replaces frame-ancestors sources with local dev origins, keeps other directives", () => {
+    const out = rewriteFrameAncestorsForDev(
+      "default-src 'self'; frame-ancestors 'self' https://*.llama.space https://llama.space; img-src *",
+    );
+    expect(out).toContain("default-src 'self'");
+    expect(out).toContain("img-src *");
+    expect(out).toContain("frame-ancestors 'self' http://localhost:* http://127.0.0.1:*");
+    expect(out).not.toContain("llama.space");
+  });
+
+  it("leaves a CSP without frame-ancestors untouched", () => {
+    const csp = "default-src 'self'; script-src 'self'";
+    expect(rewriteFrameAncestorsForDev(csp)).toBe(csp);
   });
 });
