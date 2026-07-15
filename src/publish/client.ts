@@ -367,9 +367,27 @@ export async function mapErrorResponse(
     const text = await res.text()
     if (text) {
       try {
-        const j = JSON.parse(text) as { error?: unknown; code?: unknown }
+        const j = JSON.parse(text) as { error?: unknown; code?: unknown; detail?: unknown }
         if (typeof j.error === 'string') serverMsg = j.error
         if (typeof j.code === 'string') serverCode = j.code
+        // The worker attaches a structured `detail` on failures the top-level
+        // `error` can't describe (e.g. a 422 "compile failed" whose detail is
+        // the offending file + unresolved specifier). Surface it so the user
+        // sees WHAT failed, not just that something did.
+        if (j.detail != null) {
+          const d = j.detail as { message?: unknown; path?: unknown; specifier?: unknown }
+          const detailStr =
+            typeof j.detail === 'string'
+              ? j.detail
+              : [
+                  typeof d.message === 'string' ? d.message : undefined,
+                  typeof d.path === 'string' ? `in ${d.path}` : undefined,
+                  typeof d.specifier === 'string' ? `(${d.specifier})` : undefined,
+                ]
+                  .filter(Boolean)
+                  .join(' ') || JSON.stringify(j.detail)
+          serverMsg = serverMsg ? `${serverMsg} — ${detailStr}` : detailStr
+        }
       } catch {
         serverMsg = text
       }
@@ -681,55 +699,103 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 // ===========================================================================
-// Project provisioning (AGE-67)
+// Project resolution (AGE-114: GET /project/pool + POST /project/claim)
 // ===========================================================================
 
 export interface ProvisionOptions {
   apiUrl: string
   sessionToken: string
-  /** Stable per-(owner) key; re-provisioning the same one returns the SAME
-   *  projectId, so repeat publishes converge on one project (no strays). */
+  /** Slugified app name (`slugifyLocalId(config.name)`). Used to rediscover an
+   *  already-claimed owned project by its `{localId}`/`{localId}-xxxxxx`
+   *  auto-alias, so repeat publishes converge on one project (no strays). */
   localId: string
   projectName: string
   fetch?: typeof fetch
 }
 
+interface ProjectRow {
+  projectId: string
+  alias: string
+  role: string
+}
+
 /**
- * Provision (or resolve) the caller's canonical project for `localId`.
+ * Resolve (or claim) the caller's canonical project for this app.
  *
- * POST /project/provision is idempotent by (owner, localId): it returns the
- * SAME projectId on every call for a given signed-in user + localId, creating
- * the row on first use. Because the project is keyed to the CALLER, this can
- * never hand back another user's project — auto-provision on a publish
- * ownership 403 therefore yields the user's OWN project, it does not bypass
- * the ownership gate. Returns the canonical projectId.
+ * The old single-call `POST /project/provision` (idempotent by (owner,
+ * localId)) was removed by AGE-114 in favour of `GET /project/pool` (stateless
+ * mint) + `POST /project/claim` (bind a minted id to its first owner). Claim is
+ * idempotent by *projectId*, not by a free-form key, and a pool-minted id is
+ * fresh random — so to avoid a new stray project on every publish we first
+ * rediscover our own prior claim via `GET /projects`, matching the
+ * `{localId}` / `{localId}-xxxxxx` auto-alias, before falling back to
+ * pool+claim. This mirrors mythwork's own CI publisher (`resolveProject` in
+ * `scripts/lib/ci-publish-lib.mjs`) and the host-iframe pool→claim path.
+ *
+ * Because claim binds to the CALLER, this can never hand back another user's
+ * project — auto-resolve on a publish ownership 403 yields the user's OWN
+ * project, it does not bypass the ownership gate. Returns the canonical
+ * projectId.
  */
 export async function provisionProject(opts: ProvisionOptions): Promise<string> {
   const fetchImpl = opts.fetch ?? fetch
-  const res = await fetchImpl(`${opts.apiUrl}/project/provision`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${opts.sessionToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ localId: opts.localId, projectName: opts.projectName }),
-  })
-  if (!res.ok) {
-    if (res.status === 401) {
-      throw new PublishError('session_expired', 'Session expired during project provisioning.', {
-        status: res.status,
-      })
-    }
-    const text = await res.text().catch(() => '')
+  const auth = { Authorization: `Bearer ${opts.sessionToken}` }
+
+  const listRes = await fetchImpl(`${opts.apiUrl}/projects`, { headers: auth })
+  if (listRes.status === 401) {
+    throw new PublishError('session_expired', 'Session expired during project resolution.', {
+      status: listRes.status,
+    })
+  }
+  if (listRes.ok) {
+    const listed = (await listRes.json().catch(() => null)) as { projects?: ProjectRow[] } | null
+    const owned = (listed?.projects ?? []).filter(
+      (p) =>
+        p.role === 'owner' &&
+        (p.alias === opts.localId || p.alias.startsWith(`${opts.localId}-`)),
+    )
+    // Prefer an exact-alias match; else the first prefix match (deterministic
+    // by list order) so repeat publishes reuse the same project.
+    const match = owned.find((p) => p.alias === opts.localId) ?? owned[0]
+    if (match) return match.projectId
+  }
+
+  const poolRes = await fetchImpl(`${opts.apiUrl}/project/pool?n=1`)
+  if (!poolRes.ok) {
+    const text = await poolRes.text().catch(() => '')
     throw new PublishError(
       'backend_down',
-      `Project provisioning failed (${res.status})${text ? `: ${text.slice(0, 200)}` : ''}.`,
-      { status: res.status },
+      `Project id mint failed (${poolRes.status})${text ? `: ${text.slice(0, 200)}` : ''}.`,
+      { status: poolRes.status },
     )
   }
-  const parsed = (await res.json().catch(() => null)) as { projectId?: unknown } | null
+  const pool = (await poolRes.json().catch(() => null)) as { ids?: unknown } | null
+  const mintedId = Array.isArray(pool?.ids) ? pool.ids[0] : undefined
+  if (typeof mintedId !== 'string') {
+    throw new PublishError('unknown', 'Project id mint returned no ids.')
+  }
+
+  const claimRes = await fetchImpl(`${opts.apiUrl}/project/claim`, {
+    method: 'POST',
+    headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId: mintedId, projectName: opts.projectName }),
+  })
+  if (!claimRes.ok) {
+    if (claimRes.status === 401) {
+      throw new PublishError('session_expired', 'Session expired during project claim.', {
+        status: claimRes.status,
+      })
+    }
+    const text = await claimRes.text().catch(() => '')
+    throw new PublishError(
+      'backend_down',
+      `Project claim failed (${claimRes.status})${text ? `: ${text.slice(0, 200)}` : ''}.`,
+      { status: claimRes.status },
+    )
+  }
+  const parsed = (await claimRes.json().catch(() => null)) as { projectId?: unknown } | null
   if (!parsed || typeof parsed.projectId !== 'string') {
-    throw new PublishError('unknown', 'Project provisioning returned no projectId.')
+    throw new PublishError('unknown', 'Project claim returned no projectId.')
   }
   return parsed.projectId
 }

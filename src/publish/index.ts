@@ -401,10 +401,13 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   // failure the AGE-55→67 chain kept hitting).
   //
   //  - Name-only config (the normal case): resolve the project at publish via
-  //    the idempotent POST /project/provision. The provision call IS the lookup
-  //    — (owner, slug) ⇒ the SAME pid every time (~100ms) — so there is no
-  //    write-back, no sidecar, no state to drift. Two users publishing the same
-  //    app name each converge on their own project per stage.
+  //    provisionProject — GET /projects rediscovers the owner's prior claim by
+  //    its `{slug}`/`{slug}-xxxxxx` auto-alias, else GET /project/pool + POST
+  //    /project/claim mints one (AGE-114 replaced the old single-call
+  //    /project/provision). Idempotent per (owner, slug): repeat publishes reuse
+  //    the same project, so there is no write-back, no sidecar, no state to
+  //    drift. Two users publishing the same app name each converge on their own
+  //    project per stage.
   //  - projectId PINNED (env MYTH_PROJECT_ID — wins — or a committed
   //    config.projectId): an explicit TEAM-SHARED pin — "publish to exactly
   //    this project, membership required." Try it directly; on a not-owner 403

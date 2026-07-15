@@ -514,16 +514,17 @@ describe('mapErrorResponse', () => {
   })
 })
 
-describe('provisionProject', () => {
-  it('POSTs /project/provision with Bearer + {localId, projectName} and returns the projectId', async () => {
-    let sawUrl = ''
-    let sawAuth: string | null = null
-    let sawBody: Record<string, unknown> = {}
-    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      sawUrl = String(url)
-      sawAuth = new Headers(init?.headers).get('Authorization')
-      sawBody = JSON.parse(String(init?.body))
-      return jsonRes({ projectId: 'pNEW1234567890abc', alias: 'tennis-ab12', anonymous: false })
+describe('provisionProject (GET /projects → GET /project/pool → POST /project/claim)', () => {
+  it('rediscovers an owned project by exact auto-alias, skipping pool+claim', async () => {
+    const urls: string[] = []
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL) => {
+      urls.push(String(url))
+      return jsonRes({
+        projects: [
+          { projectId: 'pOTHER', alias: 'someone-else', role: 'editor' },
+          { projectId: 'pMINE1234567890ab', alias: 'website-tennis', role: 'owner' },
+        ],
+      })
     }) as unknown as typeof fetch
     const pid = await provisionProject({
       apiUrl: API,
@@ -532,28 +533,117 @@ describe('provisionProject', () => {
       projectName: 'website-tennis',
       fetch: fakeFetch,
     })
-    expect(pid).toBe('pNEW1234567890abc')
-    expect(sawUrl).toBe(`${API}/project/provision`)
-    expect(sawAuth).toBe(`Bearer ${TOKEN}`)
-    expect(sawBody).toEqual({ localId: 'website-tennis', projectName: 'website-tennis' })
+    expect(pid).toBe('pMINE1234567890ab')
+    expect(urls).toEqual([`${API}/projects`])
   })
 
-  it('maps 401 to session_expired', async () => {
+  it('rediscovers an owned project by {localId}-xxxxxx auto-alias prefix', async () => {
+    const fakeFetch = vi.fn(async () =>
+      jsonRes({ projects: [{ projectId: 'pPREFIXED99', alias: 'website-tennis-6s7sk2', role: 'owner' }] }),
+    ) as unknown as typeof fetch
+    const pid = await provisionProject({
+      apiUrl: API,
+      sessionToken: TOKEN,
+      localId: 'website-tennis',
+      projectName: 'website-tennis',
+      fetch: fakeFetch,
+    })
+    expect(pid).toBe('pPREFIXED99')
+  })
+
+  it('does NOT match a non-owner or unrelated alias — falls through to pool+claim', async () => {
+    const urls: string[] = []
+    let claimBody: Record<string, unknown> = {}
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url)
+      urls.push(u)
+      if (u.endsWith('/projects')) {
+        return jsonRes({
+          projects: [
+            { projectId: 'pNOTOWNER', alias: 'website-tennis', role: 'editor' },
+            { projectId: 'pOTHERAPP', alias: 'other-app', role: 'owner' },
+          ],
+        })
+      }
+      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTED0000000000'] })
+      if (u.endsWith('/project/claim')) {
+        claimBody = JSON.parse(String(init?.body))
+        return jsonRes({ projectId: 'pCLAIMED111', alias: 'website-tennis-ab12' })
+      }
+      throw new Error(`unexpected ${u}`)
+    }) as unknown as typeof fetch
+    const pid = await provisionProject({
+      apiUrl: API,
+      sessionToken: TOKEN,
+      localId: 'website-tennis',
+      projectName: 'website-tennis',
+      fetch: fakeFetch,
+    })
+    expect(pid).toBe('pCLAIMED111')
+    expect(urls).toEqual([`${API}/projects`, `${API}/project/pool?n=1`, `${API}/project/claim`])
+    expect(claimBody).toEqual({ projectId: 'pMINTED0000000000', projectName: 'website-tennis' })
+  })
+
+  it('pool+claims a fresh project when the caller owns nothing yet (first publish)', async () => {
+    let claimAuth: string | null = null
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url)
+      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
+      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTEDfresh00000'] })
+      if (u.endsWith('/project/claim')) {
+        claimAuth = new Headers(init?.headers).get('Authorization')
+        return jsonRes({ projectId: 'pFIRSTCLAIM', alias: 'disco-zz99' })
+      }
+      throw new Error(`unexpected ${u}`)
+    }) as unknown as typeof fetch
+    const pid = await provisionProject({
+      apiUrl: API,
+      sessionToken: TOKEN,
+      localId: 'disco',
+      projectName: 'myth-home',
+      fetch: fakeFetch,
+    })
+    expect(pid).toBe('pFIRSTCLAIM')
+    expect(claimAuth).toBe(`Bearer ${TOKEN}`)
+  })
+
+  it('maps a 401 from GET /projects to session_expired', async () => {
     const fakeFetch = vi.fn(async () => jsonRes({ error: 'unauthorized' }, 401)) as unknown as typeof fetch
     await expect(
       provisionProject({ apiUrl: API, sessionToken: TOKEN, localId: 'x', projectName: 'x', fetch: fakeFetch }),
     ).rejects.toMatchObject({ code: 'session_expired' })
   })
 
-  it('maps a non-ok (5xx) to backend_down', async () => {
-    const fakeFetch = vi.fn(async () => jsonRes({ error: 'boom' }, 500)) as unknown as typeof fetch
+  it('maps a 401 from POST /project/claim to session_expired', async () => {
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url)
+      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
+      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTED0000000000'] })
+      return jsonRes({ error: 'sign in to claim' }, 401)
+    }) as unknown as typeof fetch
+    await expect(
+      provisionProject({ apiUrl: API, sessionToken: TOKEN, localId: 'x', projectName: 'x', fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'session_expired' })
+  })
+
+  it('maps a non-ok pool mint (5xx) to backend_down', async () => {
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url)
+      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
+      return jsonRes({ error: 'boom' }, 500)
+    }) as unknown as typeof fetch
     await expect(
       provisionProject({ apiUrl: API, sessionToken: TOKEN, localId: 'x', projectName: 'x', fetch: fakeFetch }),
     ).rejects.toMatchObject({ code: 'backend_down' })
   })
 
-  it('throws unknown when the response carries no projectId', async () => {
-    const fakeFetch = vi.fn(async () => jsonRes({ alias: 'x' })) as unknown as typeof fetch
+  it('throws unknown when claim returns no projectId', async () => {
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url)
+      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
+      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTED0000000000'] })
+      return jsonRes({ alias: 'x' })
+    }) as unknown as typeof fetch
     await expect(
       provisionProject({ apiUrl: API, sessionToken: TOKEN, localId: 'x', projectName: 'x', fetch: fakeFetch }),
     ).rejects.toMatchObject({ code: 'unknown' })
