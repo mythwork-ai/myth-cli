@@ -1,21 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { hexToCrockford256, servedTreeLabel } from './crockford.js'
+import { servedTreeLabel } from './crockford.js'
 
-describe('hexToCrockford256', () => {
-  it('matches the canonical encoder (known answer from a live publish)', () => {
-    // myth-home's published tree → its canonical subdomain label, as returned
-    // by the publish worker (which uses the canonical TS implementation this
-    // module is a port of). If this fails, the vendored port has drifted.
-    expect(
-      hexToCrockford256('368b1d5bc3bf92da6d535733d010bf6e95dc4af0f3d1dbb68dbd6d5ee85f6850'),
-    ).toBe('6t5htpy3qy9dmvakawsx045zdtaxrjqgyf8xqdmdqnpnxt2zd18f')
-  })
-
-  it('rejects malformed input', () => {
-    expect(hexToCrockford256('abc')).toBeNull()
-    expect(hexToCrockford256('Z'.repeat(64))).toBeNull()
-  })
-})
+// hexToCrockford256 now comes from @mythwork/shared/crockford32 — its tests
+// live there, not vendored here alongside a duplicate implementation.
 
 describe('servedTreeLabel', () => {
   it('extracts the 52-char tree label from the outer page', async () => {

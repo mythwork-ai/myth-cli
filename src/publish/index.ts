@@ -27,7 +27,8 @@ import { checkLockfile, formatLockfileDriftMessage } from './lockfile-check.js'
 import { selectSourceFiles } from './source-select.js'
 import { validateSource } from './validate.js'
 import { runAuthHandshake } from './auth-handshake.js'
-import { hexToCrockford256, servedTreeLabel } from './crockford.js'
+import { hexToCrockford256 } from '@mythwork/shared/crockford32'
+import { servedTreeLabel } from './crockford.js'
 import {
   checkBlobs,
   type FinalizeResult,
