@@ -15,11 +15,12 @@
  * the blob worker — one format, decoded here, encoded there.
  */
 
-import { decodePack, decodeVarint } from './pack-codec.js'
+import { decodePack, decodeVarint, PackDecodeError } from './pack-codec.js'
 
 export function unpackExport(pack: Uint8Array): Map<string, Uint8Array> {
   const files = new Map<string, Uint8Array>()
   const decoder = new TextDecoder()
+  let index = 0
   for (const entry of decodePack(pack)) {
     const { value: pathLen, bytesRead } = decodeVarint(
       entry,
@@ -28,8 +29,19 @@ export function unpackExport(pack: Uint8Array): Map<string, Uint8Array> {
       'varint_too_long',
     )
     const pathEnd = bytesRead + pathLen
+    // Bounds-check the declared path length against the entry — a malformed
+    // entry must error, not silently yield a truncated path + empty body
+    // (mirrors read-objects.ts's parseFrame length check).
+    if (pathEnd > entry.length) {
+      throw new PackDecodeError(
+        'truncated_entry',
+        `export pack entry ${index}: path length ${pathLen} exceeds entry size ${entry.length}`,
+        index,
+      )
+    }
     const path = decoder.decode(entry.subarray(bytesRead, pathEnd))
     files.set(path, entry.subarray(pathEnd))
+    index++
   }
   return files
 }
