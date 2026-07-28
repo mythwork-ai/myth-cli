@@ -121,6 +121,49 @@ describe('eject (end-to-end)', () => {
     expect(degraded).toEqual([])
   })
 
+  it('emits a .env.example from the app\'s {{NAME}} placeholders when secrets are used', () => {
+    const withSecrets = {
+      ...app,
+      'src/api.ts':
+        "import { proxyFetch } from '@mythwork/secrets'\n" +
+        "export const call = () => proxyFetch('https://api.openai.com/v1/chat', {\n" +
+        "  headers: { Authorization: 'Bearer {{OPENAI_API_KEY}}', 'X-Org': '{{OPENAI_ORG}}' },\n" +
+        '})\n',
+    }
+    const { files } = eject(withSecrets, { name: 'demo' })
+    const env = files['.env.example']
+    expect(env).toBeTruthy()
+    // Placeholders surface as VITE_<NAME>, sorted, with the client-exposure caveat.
+    expect(env).toContain('VITE_OPENAI_API_KEY=')
+    expect(env).toContain('VITE_OPENAI_ORG=')
+    expect(env).toContain('WARNING')
+    // The README's copy-instruction now points at a file that exists.
+    expect(files['EJECT_NOTES.md']).toContain('.env.example')
+  })
+
+  it('emits a self-documenting .env.example when secrets are used but no placeholder is found', () => {
+    // app uses @mythwork/secrets but references no {{NAME}} literal.
+    const { files } = eject(app, { name: 'demo' })
+    expect(files['.env.example']).toBeTruthy()
+    expect(files['.env.example']).toContain('VITE_')
+  })
+
+  it('does NOT emit .env.example or secrets guidance when the app never uses secrets', () => {
+    const noSecrets = {
+      'src/App.tsx':
+        "import { useVar } from '@orbitcode/store'\nexport default function App() { const [n] = useVar('n', 0); return <div>{n}</div> }\n",
+    }
+    const { files } = eject(noSecrets, { name: 'demo' })
+    expect(files['.env.example']).toBeUndefined()
+    expect(files['EJECT_NOTES.md']).not.toContain('.env.example')
+  })
+
+  it('never overwrites a .env.example the app already shipped', () => {
+    const shipped = { ...app, '.env.example': '# curated by the author\nVITE_CUSTOM=\n' }
+    const { files } = eject(shipped, { name: 'demo' })
+    expect(files['.env.example']).toBe('# curated by the author\nVITE_CUSTOM=\n')
+  })
+
   it('flags degraded features (collab) in the result + README', () => {
     const withCollab = {
       ...app,

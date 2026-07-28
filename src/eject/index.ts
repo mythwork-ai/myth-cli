@@ -90,18 +90,60 @@ export function eject(files: Record<string, string>, opts: EjectOptions = {}): E
     else out[path] = content
   }
 
-  // 5. Degradation accounting → README.
+  // 5. Secrets scaffold. The secrets shim reads {{NAME}} placeholders from Vite
+  //    env as VITE_<NAME>, so an app that uses secrets needs a .env.example
+  //    telling the user exactly which vars to fill — otherwise the README's
+  //    "copy .env.example" step points at a file that doesn't exist. Emit it
+  //    from the placeholders the app actually references (never overwrite one
+  //    the app already shipped).
+  const usesSecrets = report.platformSubpaths.has('secrets')
+  if (usesSecrets && !('.env.example' in out)) {
+    out['.env.example'] = emitEnvExample(name, collectSecretPlaceholders(rewritten))
+  }
+
+  // 6. Degradation accounting → README.
   const degraded = [...report.platformSubpaths].filter(s => !FULLY_SUPPORTED.has(s)).sort()
   const reviewDeps = [...report.otherNpm].sort()
-  out['EJECT_NOTES.md'] = emitReadme({ name, degraded, reviewDeps })
+  out['EJECT_NOTES.md'] = emitReadme({ name, degraded, reviewDeps, usesSecrets })
 
   return { files: out, degraded, reviewDeps, residual, warnings }
+}
+
+/** Secret placeholders (`{{NAME}}`) the app references, sorted. Mirrors the fill
+ *  regex in the vendored secrets shim so the .env.example lists exactly the
+ *  VITE_<NAME> vars the running app will look up. */
+function collectSecretPlaceholders(files: Record<string, string>): string[] {
+  const names = new Set<string>()
+  const re = /\{\{([A-Z0-9_]+)\}\}/g
+  for (const content of Object.values(files)) {
+    for (const m of content.matchAll(re)) if (m[1]) names.add(m[1])
+  }
+  return [...names].sort()
+}
+
+/** Emit `.env.example` — the VITE_<NAME> vars the secrets shim fills into
+ *  `{{NAME}}` placeholders. Header explains the client-exposure caveat; a
+ *  commented example keeps the file self-documenting when no placeholder was
+ *  found statically (e.g. a dynamically-built URL). */
+function emitEnvExample(name: string, placeholders: string[]): string {
+  const header = `# Environment for ${name} — values fill {{NAME}} placeholders in proxyFetch
+# calls at runtime, read as VITE_<NAME> (see EJECT_NOTES.md).
+# WARNING: VITE_* vars are bundled into the client build, so they are exposed to
+# the browser. Fine for local/personal use; front real secrets with your own
+# server before a public deploy. Copy this file to .env and fill in the values.
+`
+  const body = placeholders.length
+    ? placeholders.map(p => `VITE_${p}=`).join('\n')
+    : '# No {{NAME}} placeholders were detected in the source. Add any the app needs:\n# VITE_EXAMPLE_API_KEY='
+  return `${header}\n${body}\n`
 }
 
 interface ReadmeInput {
   name: string
   degraded: string[]
   reviewDeps: string[]
+  /** Whether the app uses the secrets shim (gates the secrets/.env guidance). */
+  usesSecrets: boolean
 }
 
 /** Honest export README — how to run + exactly what changed vs mythwork.
@@ -132,6 +174,15 @@ ${input.reviewDeps.map(d => `- \`${d}\``).join('\n')}
 `
     : ''
 
+  const secretsBlock = input.usesSecrets
+    ? `- **Secrets** (\`proxyFetch\`) now calls \`fetch\` directly and fills \`{{NAME}}\`
+  placeholders from **Vite env** (\`VITE_<NAME>\` in \`.env\`). WARNING: this exposes
+  keys to the browser — fine for personal/local use; for a public deploy, front
+  real secrets with your own server. Copy \`.env.example\` → \`.env\` and fill it.
+- \`.env\` is git-ignored — keep your keys out of version control.
+`
+    : ''
+
   return `# ${input.name}
 
 Your app, ejected from mythwork — a clean, standard Vite + React project that is
@@ -151,12 +202,7 @@ pnpm build    # static site → dist/
 - **Persistence** (\`useVar\`/\`useMap\`) now uses **localStorage** in the browser
   instead of mythwork's per-project store. Data is per-browser, not synced across
   devices. Same API — no app-code changes.
-- **Secrets** (\`proxyFetch\`) now calls \`fetch\` directly and fills \`{{NAME}}\`
-  placeholders from **Vite env** (\`VITE_<NAME>\` in \`.env\`). WARNING: this exposes
-  keys to the browser — fine for personal/local use; for a public deploy, front
-  real secrets with your own server. Copy \`.env.example\` → \`.env\` and fill it.
-- \`.env\` is git-ignored — keep your keys out of version control.
-${degradedBlock}${depsBlock}
+${secretsBlock}${degradedBlock}${depsBlock}
 ## Scope
 
 This is a **one-way escape hatch**: a snapshot you fully own. It does **not** sync
