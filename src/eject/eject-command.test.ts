@@ -154,6 +154,9 @@ describe('ejectCommand', () => {
     expect(await pathExists(path.join(destDir, 'EJECT_NOTES.md'))).toBe(true)
     expect(result.secretsVendored).toBe(true)
     expect(result.degraded).toEqual([])
+    // The secrets scaffold reaches disk through the command (not just eject()):
+    // the app imports @orbitcode/secrets, so .env.example must be written.
+    expect(await readOutText('.env.example')).toContain('VITE_')
   })
 
   it('--pkg-name overrides the emitted package.json name (positional stays the alias)', async () => {
