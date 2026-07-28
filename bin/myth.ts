@@ -63,8 +63,7 @@ Usage:
                [--staging]      project you own — platform imports rewritten to a
                [--api <url>]    vendored runtime, clean toolchain emitted, no
                [--dir <path>]   mythwork dependency. Runs with pnpm i && pnpm dev.
-               [--pkg-name <n>] --pkg-name sets the emitted package.json name
-                                (defaults to <name>). Refuses a non-empty dir.
+                                Transform runs server-side; refuses a non-empty dir.
   myth init                      Create myth.config.json (name only) in the
                                  current directory; first publish provisions the id
   myth run [--entry <file>]      Run the current directory as a mythwork app,
@@ -265,16 +264,13 @@ export async function pull(pullArgs: string[]) {
 
 /**
  * Parse the `myth eject` argument vector. Mirrors parsePullArgs — the name is
- * positional (the published alias to export); `--pkg-name` overrides the
- * emitted package.json name (distinct from the positional alias, so the two
- * never collide). Exported for unit testing.
+ * the positional published alias to export. Exported for unit testing.
  */
 export interface EjectArgs {
   name?: string;
   apiUrl?: string;
   staging: boolean;
   dir?: string;
-  pkgName?: string;
 }
 
 export function parseEjectArgs(ejectArgs: string[]): EjectArgs {
@@ -283,16 +279,13 @@ export function parseEjectArgs(ejectArgs: string[]): EjectArgs {
   const apiUrl = parseStringFlag(rest, "--api");
   const staging = rest.includes("--staging");
   const dir = parseStringFlag(rest, "--dir");
-  const pkgName = parseStringFlag(rest, "--pkg-name");
-  return { name, apiUrl, staging, dir, pkgName };
+  return { name, apiUrl, staging, dir };
 }
 
 export async function ejectApp(ejectArgs: string[]) {
   const parsed = parseEjectArgs(ejectArgs);
   if (!parsed.name) {
-    console.error(
-      "Usage: myth eject <name> [--staging] [--api <url>] [--dir <path>] [--pkg-name <name>]",
-    );
+    console.error("Usage: myth eject <name> [--staging] [--api <url>] [--dir <path>]");
     process.exit(1);
     return;
   }
@@ -307,55 +300,34 @@ export async function ejectApp(ejectArgs: string[]) {
 
   const { PublishError } = await import("../src/publish/client.js");
   const { HandshakeTimeoutError } = await import("../src/publish/auth-handshake.js");
-  const { ReconstructError } = await import("../src/publish/read-objects.js");
-  const { ejectCommand, EjectError } = await import("../src/eject/eject-command.js");
+  const { ejectCommand } = await import("../src/publish/eject.js");
   try {
     const result = await ejectCommand({
       name: parsed.name,
       destDir,
       staging: parsed.staging,
       apiUrl: parsed.apiUrl,
-      pkgName: parsed.pkgName,
     });
-    console.log(
-      `[myth] ✓ Ejected '${parsed.name}' — ${result.fileCount} file${result.fileCount === 1 ? "" : "s"}.`,
-    );
-    if (result.degraded.length > 0) {
-      console.warn(
-        `[myth] ⚠ Degraded off-platform (single-user/no-op): ${result.degraded.join(", ")}. See EJECT_NOTES.md.`,
-      );
-    }
-    if (result.reviewDeps.length > 0) {
-      console.warn(
-        `[myth] ⚠ Unpinned deps written as "latest" — pin a version you trust before deploying: ${result.reviewDeps.join(", ")}.`,
-      );
-    }
     if (result.secretsVendored) {
       console.warn(
         "[myth] ⚠ Secrets are read from VITE_* env and bundled into the client — exposed to the browser. " +
           "Fine for local/personal use; front real secrets with your own server for a public deploy.",
       );
     }
-    console.log(`\nEjected into ${destName}\n\nRun:\n  cd ${destName}\n  pnpm install\n  pnpm dev`);
+    console.log(
+      `\nEjected into ${destName} — a standalone project you own (see EJECT_NOTES.md for what changed).\n\nRun:\n  cd ${destName}\n  pnpm install\n  pnpm dev`,
+    );
   } catch (err) {
-    if (err instanceof EjectError) {
-      console.error(`[myth] ${err.message}`);
-      process.exit(1);
-      return;
-    }
     if (err instanceof PublishError) {
       if (err.code === "not_found") {
         console.error(`[myth] No published app named '${parsed.name}'.`);
       } else if (err.code === "not_owner") {
         console.error(`[myth] You are not the publisher of '${parsed.name}'.`);
       } else {
+        // bad_bundle (not ejectable / residual), too_large, corrupt_pack,
+        // backend_down, session_expired, unknown — err.message is user-facing.
         console.error(`[myth] ${err.message}`);
       }
-      process.exit(1);
-      return;
-    }
-    if (err instanceof ReconstructError) {
-      console.error(`[myth] ${err.message}`);
       process.exit(1);
       return;
     }

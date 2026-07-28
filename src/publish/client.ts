@@ -674,6 +674,79 @@ async function mapResolveSiteErrorResponse(res: Response, name: string): Promise
 }
 
 /**
+ * GET /publish/eject/{name} — download the server-ejected standalone project as
+ * a path-tagged OCPK pack. The eject transform runs SERVER-SIDE (shared/eject);
+ * this is a thin client, so the CLI and the frontend button get byte-identical
+ * output. Owner-gated identically to pull's pack download.
+ */
+export async function fetchEjectPack(name: string, opts: ResolveSiteOptions): Promise<Uint8Array> {
+  const fetchImpl = opts.fetch ?? fetch
+  const res = await fetchImpl(`${opts.apiUrl}/publish/eject/${encodeURIComponent(name)}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${opts.sessionToken}`,
+    },
+  })
+  if (!res.ok) {
+    throw await mapEjectErrorResponse(res, name)
+  }
+  return new Uint8Array(await res.arrayBuffer())
+}
+
+/**
+ * Map a non-2xx GET /publish/eject/{name} response onto a PublishError. Mirrors
+ * mapResolveSiteErrorResponse, plus the eject-specific 409 (can't be ejected —
+ * e.g. a monorepo, or a residual-platform bug) and 413 (source too large).
+ */
+async function mapEjectErrorResponse(res: Response, name: string): Promise<PublishError> {
+  const status = res.status
+  let serverMsg: string | undefined
+  try {
+    const text = await res.text()
+    if (text) {
+      try {
+        const j = JSON.parse(text) as { error?: unknown }
+        if (typeof j.error === 'string') serverMsg = j.error
+      } catch {
+        serverMsg = text
+      }
+    }
+  } catch {
+    // best-effort
+  }
+
+  if (status === 401) {
+    return new PublishError('session_expired', `Session expired. Re-run \`myth eject ${name}\`.`, {
+      status,
+      shortName: name,
+    })
+  }
+  if (status === 403) {
+    return new PublishError('not_owner', `You are not the publisher of '${name}'.`, { status, shortName: name })
+  }
+  if (status === 404) {
+    return new PublishError('not_found', `No published app named '${name}'.`, { status, shortName: name })
+  }
+  if (status === 409) {
+    return new PublishError('bad_bundle', serverMsg ?? `'${name}' can't be ejected.`, { status, shortName: name })
+  }
+  if (status === 413) {
+    return new PublishError('too_large', `'${name}' is too large to eject.`, { status, shortName: name })
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return new PublishError('backend_down', 'Backend is having issues. Try again in a minute.', {
+      status,
+      shortName: name,
+    })
+  }
+  return new PublishError(
+    'unknown',
+    `publish worker returned ${status}${serverMsg ? `: ${serverMsg}` : ''}`,
+    { status, shortName: name },
+  )
+}
+
+/**
  * Shared sleep helper (the single copy — client, pack-upload and the
  * build-status poller all use this one). Optionally abortable: when `signal`
  * aborts mid-sleep the timer is cleared (so it can't hold the event loop)

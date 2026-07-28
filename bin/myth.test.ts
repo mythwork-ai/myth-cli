@@ -237,10 +237,9 @@ describe('parseEjectArgs', () => {
     const result = parseEjectArgs(['my-app'])
     expect(result.name).toBe('my-app')
     expect(result.staging).toBe(false)
-    expect(result.pkgName).toBeUndefined()
   })
 
-  it('parses --staging, --api, --dir, --pkg-name alongside the name', () => {
+  it('parses --staging, --api, --dir alongside the name', () => {
     const result = parseEjectArgs([
       'my-app',
       '--staging',
@@ -248,27 +247,16 @@ describe('parseEjectArgs', () => {
       'http://localhost:8787',
       '--dir',
       'somewhere',
-      '--pkg-name',
-      'renamed',
     ])
     expect(result.name).toBe('my-app')
     expect(result.staging).toBe(true)
     expect(result.apiUrl).toBe('http://localhost:8787')
     expect(result.dir).toBe('somewhere')
-    expect(result.pkgName).toBe('renamed')
   })
 
-  it('supports --pkg-name=value form', () => {
-    const result = parseEjectArgs(['my-app', '--pkg-name=renamed'])
-    expect(result.pkgName).toBe('renamed')
-  })
-
-  it('keeps the positional alias distinct from --pkg-name', () => {
-    // The positional is the published alias to fetch; --pkg-name only renames
-    // the emitted package.json — they must never collide.
-    const result = parseEjectArgs(['my-app', '--pkg-name', 'renamed'])
-    expect(result.name).toBe('my-app')
-    expect(result.pkgName).toBe('renamed')
+  it('supports --dir=value form', () => {
+    const result = parseEjectArgs(['my-app', '--dir=elsewhere'])
+    expect(result.dir).toBe('elsewhere')
   })
 
   it('leaves name undefined when the first arg is a flag', () => {
