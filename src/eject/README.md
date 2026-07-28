@@ -42,7 +42,24 @@ app's own toolchain files (dropped so the clean emitted ones win).
 
 These five source files are a **vendored copy**. The ported `*.test.ts` (with the
 load-bearing "zero residual platform specifiers" assertion) are the drift guard.
-Convergence path: once a second consumer (mythwork's server-side eject) ships,
-graduate the pure files to a shared zero-dependency `@mythwork/eject-core`
-package that both repos depend on, owned wherever `shared/` is owned. Until then,
-re-port from the upstream SHA above when the transform changes.
+The vendored copy is the correct **interim** state while there is exactly one
+live consumer (this CLI). Until graduation, re-port from the upstream SHA above
+when the transform changes, and keep behavior fixes flowing both ways (e.g. the
+`.env.example` fix was upstreamed to mythwork as a bridge).
+
+### Graduation trigger (concrete)
+
+The second consumer is **the mythwork frontend "eject" button** — it downloads
+the code and must stay byte-for-byte in sync with `myth eject`. It should be
+implemented **server-side**: the pure transform (`index`/`rewrite-imports`/
+`platform-specifiers`/`portable-runtime`/`toolchain`) is browser+server safe, but
+the download/decode layer (`../publish/read-objects.ts`) is node-coupled
+(`zlib`/`crypto`/`fs`), so a Node backend running the same code streams identical
+output — a browser port would only add drift surface.
+
+**When that button is built: EXTRACT the pure files into a zero-dependency
+`@mythwork/eject-core` package and have BOTH myth-cli and mythwork depend on it.
+Do NOT vendor a third copy into the frontend** — that is the failure mode that
+breaks "completely synced." At extraction, the interim fixes (`.env.example`,
+etc.) live in `eject-core` **once**, not triple-maintained across the CLI,
+mythwork `shared/eject`, and the frontend.
