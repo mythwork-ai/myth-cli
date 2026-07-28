@@ -20,6 +20,7 @@ import {
   parseTreeEntries,
   indexPackObjects,
   materializeTree,
+  planTree,
   ReconstructError,
   type IndexedObject,
 } from './read-objects.js'
@@ -55,6 +56,42 @@ function manualTreeBody(entries: Array<{ mode: string; name: string; hashHex: st
 
 const FAKE_HASH_A = 'aa'.repeat(32)
 const FAKE_HASH_B = 'bb'.repeat(32)
+
+describe('planTree (in-memory write plan — the seam myth eject reuses)', () => {
+  it('returns the same path->bytes plan that materializeTree writes to disk', async () => {
+    const enc = new TextEncoder()
+    const files = new Map<string, Uint8Array>([
+      ['src/main.tsx', enc.encode('export default 1')],
+      ['src/nested/util.ts', enc.encode('export const x = 1')],
+      ['logo.bin', new Uint8Array([0, 1, 2, 255])],
+    ])
+    const built = await buildObjectsFromFiles(files)
+    const objects = indexPackObjects([...built.objects.values()].map(o => o.deflated))
+
+    const plan = planTree(built.rootTree, objects)
+    const byPath = new Map(plan.map(f => [f.relPath, f.content]))
+    // Same set of paths, and byte-identical content, as the source tree.
+    expect([...byPath.keys()].sort()).toEqual([...files.keys()].sort())
+    for (const [rel, bytes] of files) {
+      expect(byPath.get(rel)).toEqual(bytes)
+    }
+
+    // materializeTree writes exactly this plan — the refactor is behavior-preserving.
+    const dest = await tmpDestDir()
+    try {
+      const result = await materializeTree(built.rootTree, objects, dest)
+      expect(result.paths.sort()).toEqual(plan.map(f => f.relPath).sort())
+      expect(result.fileCount).toBe(plan.length)
+    } finally {
+      await rm(dest, { recursive: true, force: true })
+    }
+  })
+
+  it('validates in memory: throws ReconstructError on a missing object (no disk needed)', () => {
+    const objects = new Map<string, IndexedObject>()
+    expect(() => planTree(FAKE_HASH_A, objects)).toThrow(ReconstructError)
+  })
+})
 
 describe('round-trip: buildObjectsFromFiles -> indexPackObjects -> materializeTree', () => {
   it('reconstructs a nested tree, an empty file, binary content, and a unicode filename byte-for-byte', async () => {
