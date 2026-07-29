@@ -18,6 +18,9 @@ async function main() {
     case "pull":
       await pull(args.slice(1));
       break;
+    case "eject":
+      await ejectApp(args.slice(1));
+      break;
     case "init":
       await init();
       break;
@@ -56,6 +59,11 @@ Usage:
                [--staging]      source into a new local dir ./<name>
                [--api <url>]    (refuses an existing non-empty dir).
                [--dir <path>]   Uses the same auth as publish.
+  myth eject <name>             Export <name> as a fully standalone Vite/React
+               [--staging]      project you own — platform imports rewritten to a
+               [--api <url>]    vendored runtime, clean toolchain emitted, no
+               [--dir <path>]   mythwork dependency. Runs with pnpm i && pnpm dev.
+                                Transform runs server-side; refuses a non-empty dir.
   myth init                      Create myth.config.json (name only) in the
                                  current directory; first publish provisions the id
   myth run [--entry <file>]      Run the current directory as a mythwork app,
@@ -84,6 +92,7 @@ Examples:
   myth clone reveal              # Clone the reveal example
   cd reveal
   myth pull my-app                # Reconstruct my-app into ./my-app
+  myth eject my-app               # Export my-app as a standalone project you own
   myth init                      # Create myth.config.json
   myth run                       # Start the dev server
   myth run --entry MyApp.tsx     # Use a different entry file
@@ -245,6 +254,86 @@ export async function pull(pullArgs: string[]) {
     if (err instanceof HandshakeTimeoutError) {
       console.error(`[myth] ${err.message}`);
       console.error("[myth] No sign-in received. Re-run `myth pull`.");
+      process.exit(1);
+      return;
+    }
+    console.error(`[myth] ${(err as Error).message ?? err}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Parse the `myth eject` argument vector. Mirrors parsePullArgs — the name is
+ * the positional published alias to export. Exported for unit testing.
+ */
+export interface EjectArgs {
+  name?: string;
+  apiUrl?: string;
+  staging: boolean;
+  dir?: string;
+}
+
+export function parseEjectArgs(ejectArgs: string[]): EjectArgs {
+  const name = ejectArgs[0] && !ejectArgs[0].startsWith("--") ? ejectArgs[0] : undefined;
+  const rest = name ? ejectArgs.slice(1) : ejectArgs;
+  const apiUrl = parseStringFlag(rest, "--api");
+  const staging = rest.includes("--staging");
+  const dir = parseStringFlag(rest, "--dir");
+  return { name, apiUrl, staging, dir };
+}
+
+export async function ejectApp(ejectArgs: string[]) {
+  const parsed = parseEjectArgs(ejectArgs);
+  if (!parsed.name) {
+    console.error("Usage: myth eject <name> [--staging] [--api <url>] [--dir <path>]");
+    process.exit(1);
+    return;
+  }
+  const destName = parsed.dir ?? parsed.name;
+  const destDir = path.resolve(process.cwd(), destName);
+
+  if (isNonEmptyDirectory(destDir)) {
+    console.error(`[myth] Refusing to eject into existing non-empty directory: ${destName}`);
+    process.exit(1);
+    return;
+  }
+
+  const { PublishError } = await import("../src/publish/client.js");
+  const { HandshakeTimeoutError } = await import("../src/publish/auth-handshake.js");
+  const { ejectCommand } = await import("../src/publish/eject.js");
+  try {
+    const result = await ejectCommand({
+      name: parsed.name,
+      destDir,
+      staging: parsed.staging,
+      apiUrl: parsed.apiUrl,
+    });
+    if (result.secretsVendored) {
+      console.warn(
+        "[myth] ⚠ Secrets are read from VITE_* env and bundled into the client — exposed to the browser. " +
+          "Fine for local/personal use; front real secrets with your own server for a public deploy.",
+      );
+    }
+    console.log(
+      `\nEjected into ${destName} — a standalone project you own (see EJECT_NOTES.md for what changed).\n\nRun:\n  cd ${destName}\n  pnpm install\n  pnpm dev`,
+    );
+  } catch (err) {
+    if (err instanceof PublishError) {
+      if (err.code === "not_found") {
+        console.error(`[myth] No published app named '${parsed.name}'.`);
+      } else if (err.code === "not_owner") {
+        console.error(`[myth] You are not the publisher of '${parsed.name}'.`);
+      } else {
+        // bad_bundle (not ejectable / residual), too_large, corrupt_pack,
+        // backend_down, session_expired, unknown — err.message is user-facing.
+        console.error(`[myth] ${err.message}`);
+      }
+      process.exit(1);
+      return;
+    }
+    if (err instanceof HandshakeTimeoutError) {
+      console.error(`[myth] ${err.message}`);
+      console.error("[myth] No sign-in received. Re-run `myth eject`.");
       process.exit(1);
       return;
     }

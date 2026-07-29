@@ -20,24 +20,13 @@
  */
 
 import { mkdir } from 'node:fs/promises'
-import { acquireSessionToken, resolveBackend } from './index.js'
-import { resolvePublishedSite, PublishError } from './client.js'
-import { fetchObjectPack } from './pack-download.js'
-import { indexPackObjects, materializeTree, ReconstructError } from './read-objects.js'
+import { PublishError } from './client.js'
+import { downloadObjectGraph, type DownloadOptions } from './download.js'
+import { materializeTree, ReconstructError } from './read-objects.js'
 
-export interface PullOptions {
-  /** The published alias to pull, e.g. "my-app" for my-app.myth.work. */
-  name: string
+export interface PullOptions extends DownloadOptions {
   /** Local directory to materialize the app into. Created if it doesn't exist. */
   destDir: string
-  /** When true, target api.llama.space (staging). Default: api.myth.work (prod). */
-  staging?: boolean
-  /** Override the worker base URL (escape hatch for local dev). */
-  apiUrl?: string
-  /** Override the auth origin (escape hatch / for local dev). */
-  authOrigin?: string
-  /** Override fetch (for tests). */
-  fetch?: typeof fetch
 }
 
 export interface PullResult {
@@ -54,26 +43,7 @@ export interface PullResult {
  * non-zero.
  */
 export async function pullCommand(opts: PullOptions): Promise<PullResult> {
-  const { apiUrl, authOrigin } = resolveBackend(opts)
-  console.log(`[myth] Backend: ${apiUrl}`)
-
-  const session = await acquireSessionToken(authOrigin)
-  console.log(`[myth] ✓ Signed in as ${session.who}`)
-
-  console.log(`[myth] Resolving '${opts.name}'...`)
-  const site = await resolvePublishedSite(opts.name, {
-    apiUrl,
-    sessionToken: session.token,
-    fetch: opts.fetch,
-  })
-
-  console.log(`[myth] Fetching object graph (tree ${site.rootTree.slice(0, 12)}…)...`)
-  const packEntries = await fetchObjectPack(site.rootTree, {
-    apiUrl,
-    sessionToken: session.token,
-    fetch: opts.fetch,
-  })
-  const objects = indexPackObjects(packEntries)
+  const { site, objects } = await downloadObjectGraph(opts)
 
   // Only create the destination directory once both network calls have
   // succeeded — a failed pull never leaves a stray folder behind.

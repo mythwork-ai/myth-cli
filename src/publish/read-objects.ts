@@ -190,8 +190,11 @@ function isSafeEntryName(name: string): boolean {
   return true
 }
 
-interface PlannedFile {
+export interface PlannedFile {
+  /** POSIX-relative path (never absolute, no `.`/`..`/separator tricks — every
+   *  segment passed `isSafeEntryName` during the walk). */
   relPath: string
+  /** Raw file bytes (framing already stripped) — byte-exact, never re-encoded. */
   content: Uint8Array
 }
 
@@ -201,23 +204,19 @@ export interface MaterializeResult {
 }
 
 /**
- * Recursively materialize the tree at `rootTreeHash` into real files under
- * `destDir`. Two-phase: phase 1 walks the whole graph in memory only,
- * validating every hash is present, every entry name is safe, and every
- * mode is known — building a flat write plan. Phase 2, only once phase 1
- * succeeds completely, writes that plan to disk. `destDir` is expected to
- * already exist (the caller creates it); this function only creates
- * SUBdirectories under it. Blobs are always written as plain files —
- * executable bits are never restored (the real publish path,
- * `assembleSourceAndHash`, always encodes mode 100644 regardless of the
- * original file's executable bit, so a real pull never needs to restore one
- * either; a 100755 entry is accepted here purely for forward-compatibility).
+ * Walk the tree at `rootTreeHash` in memory and return a flat, validated write
+ * plan (path -> raw bytes) — phase 1 of `materializeTree`, extracted so callers
+ * that transform the app in memory (e.g. `myth eject`) can reuse the exact same
+ * validated graph walk without writing to disk. Validates every hash is present,
+ * every entry name is safe, and every mode is known; throws `ReconstructError`
+ * on any structural problem before returning. Blobs carry raw bytes — the
+ * executable bit is intentionally not represented (publish always encodes
+ * 100644; a 100755 entry is accepted purely for forward-compatibility).
  */
-export async function materializeTree(
+export function planTree(
   rootTreeHash: string,
   objects: Map<string, IndexedObject>,
-  destDir: string,
-): Promise<MaterializeResult> {
+): PlannedFile[] {
   const plan: PlannedFile[] = []
 
   function walk(treeHash: string, relDir: string): void {
@@ -261,9 +260,26 @@ export async function materializeTree(
     }
   }
 
+  walk(rootTreeHash, '')
+  return plan
+}
+
+/**
+ * Recursively materialize the tree at `rootTreeHash` into real files under
+ * `destDir`. Two-phase: phase 1 (`planTree`) walks and fully validates the
+ * whole graph in memory; phase 2, only once phase 1 succeeds completely,
+ * writes that plan to disk. `destDir` is expected to already exist (the caller
+ * creates it); this function only creates SUBdirectories under it. Blobs are
+ * always written as plain files — executable bits are never restored.
+ */
+export async function materializeTree(
+  rootTreeHash: string,
+  objects: Map<string, IndexedObject>,
+  destDir: string,
+): Promise<MaterializeResult> {
   // Phase 1: validate the whole graph in memory. Nothing touches disk
   // until this returns without throwing.
-  walk(rootTreeHash, '')
+  const plan = planTree(rootTreeHash, objects)
 
   // Phase 2: write the validated plan.
   for (const file of plan) {

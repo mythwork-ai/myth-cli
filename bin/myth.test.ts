@@ -12,6 +12,7 @@ import path from 'node:path'
 import {
   clone,
   isNonEmptyDirectory,
+  parseEjectArgs,
   parsePubArgs,
   parsePullArgs,
   pull,
@@ -228,6 +229,40 @@ describe('parsePullArgs', () => {
   it('leaves name undefined when args are empty', () => {
     const result = parsePullArgs([])
     expect(result.name).toBeUndefined()
+  })
+})
+
+describe('parseEjectArgs', () => {
+  it('parses a positional name', () => {
+    const result = parseEjectArgs(['my-app'])
+    expect(result.name).toBe('my-app')
+    expect(result.staging).toBe(false)
+  })
+
+  it('parses --staging, --api, --dir alongside the name', () => {
+    const result = parseEjectArgs([
+      'my-app',
+      '--staging',
+      '--api',
+      'http://localhost:8787',
+      '--dir',
+      'somewhere',
+    ])
+    expect(result.name).toBe('my-app')
+    expect(result.staging).toBe(true)
+    expect(result.apiUrl).toBe('http://localhost:8787')
+    expect(result.dir).toBe('somewhere')
+  })
+
+  it('supports --dir=value form', () => {
+    const result = parseEjectArgs(['my-app', '--dir=elsewhere'])
+    expect(result.dir).toBe('elsewhere')
+  })
+
+  it('leaves name undefined when the first arg is a flag', () => {
+    const result = parseEjectArgs(['--staging'])
+    expect(result.name).toBeUndefined()
+    expect(result.staging).toBe(true)
   })
 })
 
