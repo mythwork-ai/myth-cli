@@ -24,7 +24,7 @@ import path from 'node:path'
 import { loadConfigOrThrow, OrbitConfigError } from '../virtual-html.js'
 import { assembleSourceAndHash } from './build-objects.js'
 import { checkLockfile, formatLockfileDriftMessage } from './lockfile-check.js'
-import { selectSourceFiles } from './source-select.js'
+import { secretExclusionNotice, selectSourceFilesReporting } from './source-select.js'
 import { validateSource } from './validate.js'
 import { runAuthHandshake } from './auth-handshake.js'
 import { hexToCrockford256, servedTreeLabel } from './crockford.js'
@@ -297,7 +297,12 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   // not validated — an app's own imports come from its dependencies; a peer dep
   // it actually imports should also appear in dependencies.)
   const deps: Record<string, string> = pkg.dependencies ?? {}
-  const files = selectSourceFiles(root)
+  const { files, secretsExcluded } = selectSourceFilesReporting(root)
+  // Say what the secret floor took out. Silence here reads as "everything you
+  // committed was uploaded", which is not true and is not recoverable from the
+  // publish output any other way.
+  const notice = secretExclusionNotice(secretsExcluded)
+  if (notice) console.log(notice)
   const errors = validateSource({ files, deps })
   if (errors.length > 0) {
     throw new OrbitConfigError('Cannot publish — fix these first:\n  - ' + errors.join('\n  - '))

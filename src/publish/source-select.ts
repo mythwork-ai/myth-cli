@@ -16,6 +16,10 @@
  * both dangling-link crashes and traversal outside the project root.
  *
  * Returns POSIX-style relative paths, sorted for determinism.
+ *
+ * The secret floor is the one exclusion a project cannot infer from its own
+ * config, so `selectSourceFilesReporting` also reports what it removed and
+ * `secretExclusionNotice` turns that into the line `myth publish` prints.
  */
 import { readdirSync, readFileSync, lstatSync, existsSync } from 'node:fs'
 import path from 'node:path'
@@ -87,9 +91,26 @@ function gitignored(
   return false
 }
 
-export function selectSourceFiles(root: string): string[] {
+/** What `selectSourceFilesReporting` found: the upload set, plus what the
+ *  secret floor took out of it. */
+export interface SourceSelection {
+  /** The files to upload. */
+  files: string[]
+  /** Paths removed by the hard secret floor (`SECRET_PATTERNS`) rather than by
+   *  `.gitignore` or a build-output heuristic. Reported because the floor is
+   *  invisible to the caller otherwise: a project can commit `.env.production`
+   *  on purpose, watch a publish succeed, and never learn the file did not
+   *  travel — which is exactly how myth-fff shipped a build with no Sentry DSN
+   *  or Amplitude keys inlined and no signal that anything was missing. */
+  secretsExcluded: string[]
+}
+
+/** `selectSourceFiles`, but also reporting what the secret floor excluded. Both
+ *  come from the same single walk, so this costs nothing extra. */
+export function selectSourceFilesReporting(root: string): SourceSelection {
   const secret = ignore().add(SECRET_PATTERNS)
   const out: string[] = []
+  const secretsExcluded: string[] = []
 
   function walk(dir: string, relDir: string, matchers: ScopedMatcher[]): void {
     // Layer this directory's own .gitignore (if any) onto the inherited set.
@@ -111,7 +132,10 @@ export function selectSourceFiles(root: string): string[] {
         walk(full, relPosix, scoped)
       } else if (st.isFile()) {
         // Secret floor first — basename or full relative path.
-        if (secret.ignores(name) || secret.ignores(relPosix)) continue
+        if (secret.ignores(name) || secret.ignores(relPosix)) {
+          secretsExcluded.push(relPosix)
+          continue
+        }
         if (gitignored(relPosix, scoped, false)) continue
         out.push(relPosix)
       }
@@ -119,5 +143,34 @@ export function selectSourceFiles(root: string): string[] {
   }
 
   walk(root, '', [])
-  return out.sort()
+  return { files: out.sort(), secretsExcluded: secretsExcluded.sort() }
+}
+
+export function selectSourceFiles(root: string): string[] {
+  return selectSourceFilesReporting(root).files
+}
+
+/** How many excluded paths to name before summarising the rest. */
+const NOTICE_LIST_LIMIT = 5
+
+/**
+ * The publish-time notice for secret-floor exclusions, or null when there is
+ * nothing to report. Pure and exported so the wording is unit-tested rather
+ * than only ever seen in a publish log.
+ *
+ * Deliberately phrased as information, not a warning: excluding these is
+ * correct and stays correct. What was missing is any statement that it
+ * happened, and the one consequence a caller cannot otherwise guess — the
+ * server-side build does not see the file either.
+ */
+export function secretExclusionNotice(secretsExcluded: string[]): string | null {
+  if (secretsExcluded.length === 0) return null
+  const shown = secretsExcluded.slice(0, NOTICE_LIST_LIMIT).join(', ')
+  const rest = secretsExcluded.length - NOTICE_LIST_LIMIT
+  const list = rest > 0 ? `${shown}, and ${rest} more` : shown
+  return (
+    `[myth] Not uploaded (secret-file rule): ${list}\n` +
+    `[myth]   The server-side build does not see these either. A value a build ` +
+    `needs must live in committed source, not a .env file.`
+  )
 }

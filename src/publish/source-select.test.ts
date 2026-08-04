@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { selectSourceFiles } from './source-select.js'
+import { secretExclusionNotice, selectSourceFiles, selectSourceFilesReporting } from './source-select.js'
 
 function scaffold(): string {
   const root = mkdtempSync(path.join(tmpdir(), 'myth-src-'))
@@ -136,5 +136,73 @@ describe('selectSourceFiles', () => {
 
   it('returns POSIX-style relative paths, sorted, deterministic', () => {
     expect(selectSourceFiles(root)).toEqual([...selectSourceFiles(root)].sort())
+  })
+})
+
+describe('selectSourceFilesReporting', () => {
+  let root: string
+  beforeEach(() => {
+    root = scaffold()
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('reports what the secret floor removed, not what .gitignore removed', () => {
+    // The floor is the exclusion a project cannot infer from its own config:
+    // `.gitignore` is the project's own file, and build-output dirs are
+    // conventional. Only the floor is invisible, so only it is reported.
+    writeFileSync(path.join(root, 'app.pem'), 'x')
+    const { files, secretsExcluded } = selectSourceFilesReporting(root)
+    expect(secretsExcluded).toEqual(['.env', 'app.pem'])
+    expect(files).not.toContain('.env')
+    expect(files).not.toContain('app.pem')
+    // coverage/ and dist/ are excluded too, but not by the floor.
+    expect(secretsExcluded).not.toContain('coverage/report.html')
+    expect(secretsExcluded).not.toContain('dist/bundle.js')
+  })
+
+  it('reports a nested committed env file — the myth-fff case', () => {
+    // app/.env.production is matched by the floor's `.env.*`, so a project can
+    // commit it deliberately and still publish a tree without it.
+    mkdirSync(path.join(root, 'app'), { recursive: true })
+    writeFileSync(path.join(root, 'app', '.env.production'), 'VITE_KEY=abc')
+    const { files, secretsExcluded } = selectSourceFilesReporting(root)
+    expect(secretsExcluded).toContain('app/.env.production')
+    expect(files).not.toContain('app/.env.production')
+  })
+
+  it('does not report the re-included example files', () => {
+    writeFileSync(path.join(root, '.env.example'), 'KEY=')
+    const { files, secretsExcluded } = selectSourceFilesReporting(root)
+    expect(secretsExcluded).not.toContain('.env.example')
+    expect(files).toContain('.env.example')
+  })
+
+  it('agrees with selectSourceFiles, which stays a thin wrapper', () => {
+    expect(selectSourceFiles(root)).toEqual(selectSourceFilesReporting(root).files)
+  })
+})
+
+describe('secretExclusionNotice', () => {
+  it('is silent when nothing was excluded', () => {
+    expect(secretExclusionNotice([])).toBeNull()
+  })
+
+  it('names the files and states the build consequence', () => {
+    const notice = secretExclusionNotice(['app/.env.production'])
+    expect(notice).toContain('app/.env.production')
+    // The consequence a caller cannot otherwise guess: the server-side build
+    // runs on the uploaded tree, so it does not see the file either.
+    expect(notice).toContain('server-side build')
+  })
+
+  it('summarises past five files instead of printing a wall', () => {
+    const many = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((n) => `${n}/.env`)
+    const notice = secretExclusionNotice(many)
+    expect(notice).toContain('a/.env')
+    expect(notice).toContain('e/.env')
+    expect(notice).not.toContain('f/.env')
+    expect(notice).toContain('and 2 more')
   })
 })
