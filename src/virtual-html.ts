@@ -405,8 +405,16 @@ export function hostFramePlugin(opts: HostFramePluginOptions): Plugin {
         // fallback serves their real index.html.
         if (kind === "app" && virtualEntry !== null && !isAssetUrl(url)) {
           const config = readConfigSafe(root);
-          res.setHeader("Content-Type", "text/html");
-          res.end(generateAppHtml(config));
+          // Must go through vite's html transforms: @vitejs/plugin-react
+          // injects its refresh preamble there, and every module it
+          // transforms throws at boot when the preamble is missing.
+          server.transformIndexHtml(url, generateAppHtml(config), req.originalUrl).then(
+            (html) => {
+              res.setHeader("Content-Type", "text/html");
+              res.end(html);
+            },
+            (err) => next(err),
+          );
           return;
         }
 
