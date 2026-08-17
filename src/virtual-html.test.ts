@@ -188,7 +188,12 @@ describe('hostFramePlugin legacy app-host document', () => {
     collabUrl: 'wss://collab.myth.work',
   } as const
 
-  const respond = async (url: string, entry: string | null) => {
+  const respond = async (
+    url: string,
+    entry: string | null,
+    transformIndexHtml: (url: string, html: string) => Promise<string> = async (_url, html) =>
+      html.replace('<body>', '<body>\n<script type="module" src="/@react-refresh"></script>'),
+  ) => {
     const plugin = hostFramePlugin({
       projectId: 'abc123abc123abc12',
       projectName: 'Probe',
@@ -204,14 +209,15 @@ describe('hostFramePlugin legacy app-host document', () => {
     const transformed: string[] = []
     plugin.configureServer({
       middlewares: { use: (h: typeof handler) => void (handler = h) },
-      transformIndexHtml: async (_url: string, html: string) => {
+      transformIndexHtml: async (url: string, html: string) => {
         transformed.push(html)
-        return html.replace('<body>', '<body>\n<script type="module" src="/@react-refresh"></script>')
+        return transformIndexHtml(url, html)
       },
     })
 
     const chunks: string[] = []
     let nexted = false
+    let nextedErr: unknown
     const done = new Promise<void>(resolve => {
       handler?.(
         { url, headers: { host: 'app.localhost:5173' }, originalUrl: url },
@@ -222,14 +228,15 @@ describe('hostFramePlugin legacy app-host document', () => {
             resolve()
           },
         },
-        () => {
+        (e?: unknown) => {
           nexted = true
+          nextedErr = e
           resolve()
         },
       )
     })
     await done
-    return { body: chunks[0], nexted, transformed }
+    return { body: chunks[0], nexted, nextedErr, transformed }
   }
 
   it('runs the virtual shell through transformIndexHtml so the react preamble lands', async () => {
@@ -242,5 +249,15 @@ describe('hostFramePlugin legacy app-host document', () => {
   it('leaves asset URLs and modern apps to vite', async () => {
     expect((await respond('/src/App.tsx', 'src/App.tsx')).nexted).toBe(true)
     expect((await respond('/', null)).nexted).toBe(true)
+  })
+
+  it('forwards a transformIndexHtml rejection to next(err) instead of writing a response', async () => {
+    const transformErr = new Error('boom: bad html transform')
+    const { body, nexted, nextedErr } = await respond('/', 'src/App.tsx', async () => {
+      throw transformErr
+    })
+    expect(nexted).toBe(true)
+    expect(nextedErr).toBe(transformErr)
+    expect(body).toBeUndefined()
   })
 })
