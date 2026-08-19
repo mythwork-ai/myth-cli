@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { generateLocalPid, generateWrapperHtml, isAssetUrl, loadConfigOrThrow, OrbitConfigError } from './virtual-html.js'
+import type { Plugin } from 'vite'
+import {
+  generateLocalPid,
+  generateWrapperHtml,
+  hostFramePlugin,
+  isAssetUrl,
+  loadConfigOrThrow,
+  OrbitConfigError,
+} from './virtual-html.js'
 
 describe('loadConfigOrThrow projectId optionality (AGE-78)', () => {
   let root = ''
@@ -167,5 +175,89 @@ describe('isAssetUrl', () => {
     expect(isAssetUrl('/')).toBe(false)
     expect(isAssetUrl('/project/abc123')).toBe(false)
     expect(isAssetUrl('/discover?tags=ai')).toBe(false)
+  })
+})
+
+describe('hostFramePlugin legacy app-host document', () => {
+  const stage = {
+    name: 'prod',
+    label: 'myth.work (prod)',
+    apiOrigin: 'https://api.myth.work',
+    authOrigin: 'https://auth.myth.work',
+    serveOrigin: 'https://myth.work',
+    collabUrl: 'wss://collab.myth.work',
+  } as const
+
+  const respond = async (
+    url: string,
+    entry: string | null,
+    transformIndexHtml: (url: string, html: string) => Promise<string> = async (_url, html) =>
+      html.replace('<body>', '<body>\n<script type="module" src="/@react-refresh"></script>'),
+  ) => {
+    const plugin = hostFramePlugin({
+      projectId: 'abc123abc123abc12',
+      projectName: 'Probe',
+      stage,
+      entry,
+    }) as Plugin & {
+      configResolved: (c: { root: string }) => void
+      configureServer: (s: unknown) => void
+    }
+    plugin.configResolved({ root: os.tmpdir() })
+
+    let handler: ((req: unknown, res: unknown, next: (e?: unknown) => void) => void) | undefined
+    const transformed: string[] = []
+    plugin.configureServer({
+      middlewares: { use: (h: typeof handler) => void (handler = h) },
+      transformIndexHtml: async (url: string, html: string) => {
+        transformed.push(html)
+        return transformIndexHtml(url, html)
+      },
+    })
+
+    const chunks: string[] = []
+    let nexted = false
+    let nextedErr: unknown
+    const done = new Promise<void>(resolve => {
+      handler?.(
+        { url, headers: { host: 'app.localhost:5173' }, originalUrl: url },
+        {
+          setHeader: () => {},
+          end: (body: string) => {
+            chunks.push(body)
+            resolve()
+          },
+        },
+        (e?: unknown) => {
+          nexted = true
+          nextedErr = e
+          resolve()
+        },
+      )
+    })
+    await done
+    return { body: chunks[0], nexted, nextedErr, transformed }
+  }
+
+  it('runs the virtual shell through transformIndexHtml so the react preamble lands', async () => {
+    const { body, transformed } = await respond('/', 'src/App.tsx')
+    expect(transformed).toHaveLength(1)
+    expect(transformed[0]).toContain('/@id/__x00__virtual:myth-entry')
+    expect(body).toContain('<script type="module" src="/@react-refresh"></script>')
+  })
+
+  it('leaves asset URLs and modern apps to vite', async () => {
+    expect((await respond('/src/App.tsx', 'src/App.tsx')).nexted).toBe(true)
+    expect((await respond('/', null)).nexted).toBe(true)
+  })
+
+  it('forwards a transformIndexHtml rejection to next(err) instead of writing a response', async () => {
+    const transformErr = new Error('boom: bad html transform')
+    const { body, nexted, nextedErr } = await respond('/', 'src/App.tsx', async () => {
+      throw transformErr
+    })
+    expect(nexted).toBe(true)
+    expect(nextedErr).toBe(transformErr)
+    expect(body).toBeUndefined()
   })
 })
