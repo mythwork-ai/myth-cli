@@ -13,7 +13,7 @@ describe("resolveStage", () => {
     expect(s.apiOrigin).toBe("https://api.mythwork.ai");
     expect(s.authOrigin).toBe("https://auth.mythwork.ai");
     expect(s.serveOrigin).toBe("https://myth.work");
-    expect(s.collabUrl).toBe("wss://collab.myth.work");
+    expect(s.collabUrl).toBe("wss://collab.mythwork.ai");
   });
 
   it("resolves staging to the llama.space stack", () => {

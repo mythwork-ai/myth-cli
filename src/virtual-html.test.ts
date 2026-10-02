@@ -132,7 +132,7 @@ describe('generateWrapperHtml (deployment-shaped dev wrapper)', () => {
     apiOrigin: 'https://api.mythwork.ai',
     authOrigin: 'https://auth.mythwork.ai',
     serveOrigin: 'https://myth.work',
-    collabUrl: 'wss://collab.myth.work',
+    collabUrl: 'wss://collab.mythwork.ai',
   } as const
   const html = generateWrapperHtml(
     { projectId: 'abc123abc123abc12', projectName: 'Lab Nav', stage, port: '5173' },
@@ -152,7 +152,7 @@ describe('generateWrapperHtml (deployment-shaped dev wrapper)', () => {
     expect(html).toContain('iframeOrigin: "http://app.localhost:5173"')
     expect(html).toContain('authOrigin: "http://auth.localhost:5173"')
     expect(html).toContain(
-      'backendOrigins: {"api":"http://api.localhost:5173","auth":"http://auth.localhost:5173","collab":"wss://collab.myth.work"}',
+      'backendOrigins: {"api":"http://api.localhost:5173","auth":"http://auth.localhost:5173","collab":"wss://collab.mythwork.ai"}',
     )
     expect(html).toContain('appId: "abc123abc123abc12"')
   })
@@ -185,7 +185,7 @@ describe('hostFramePlugin legacy app-host document', () => {
     apiOrigin: 'https://api.mythwork.ai',
     authOrigin: 'https://auth.mythwork.ai',
     serveOrigin: 'https://myth.work',
-    collabUrl: 'wss://collab.myth.work',
+    collabUrl: 'wss://collab.mythwork.ai',
   } as const
 
   const respond = async (

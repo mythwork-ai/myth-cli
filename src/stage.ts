@@ -42,7 +42,7 @@ const STAGES: Record<Stage["name"], Stage> = {
     apiOrigin: "https://api.mythwork.ai",
     authOrigin: "https://auth.mythwork.ai",
     serveOrigin: "https://myth.work",
-    collabUrl: "wss://collab.myth.work",
+    collabUrl: "wss://collab.mythwork.ai",
   },
   staging: {
     name: "staging",
