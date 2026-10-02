@@ -22,7 +22,7 @@ export interface EjectOptions {
   name: string
   /** Local directory to write the standalone project into. */
   destDir: string
-  /** When true, target api.llama.space (staging). Default: api.myth.work (prod). */
+  /** When true, target api.llama.space (staging). Default: api.mythwork.ai (prod). */
   staging?: boolean
   /** Override the worker base URL (escape hatch for local dev). */
   apiUrl?: string

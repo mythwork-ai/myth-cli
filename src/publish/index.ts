@@ -11,7 +11,7 @@
  *   6. POST /publish to finalize. Worker derives the canonical URL.
  *   7. Print the canonical + optional alias URLs.
  *
- * Default backend is prod (api.myth.work). `--staging` switches to
+ * Default backend is prod (api.mythwork.ai). `--staging` switches to
  * api.llama.space. Per spec amendment 2026-05-26: users typing `myth
  * publish` expect their app to land at *.myth.work; staging is a
  * tester's opt-in.
@@ -46,7 +46,7 @@ export interface PublishOptions {
   cwd: string
   /** Optional alias short-name (becomes {name}.myth.work). */
   shortName?: string
-  /** When true, publish against api.llama.space (staging). Default: api.myth.work (prod). */
+  /** When true, publish against api.llama.space (staging). Default: api.mythwork.ai (prod). */
   staging?: boolean
   /** Override the worker base URL (escape hatch for local dev). */
   apiUrl?: string
@@ -79,10 +79,12 @@ export interface PublishOptions {
   watch?: boolean
 }
 
-const PROD_API_URL = 'https://api.myth.work'
+const PROD_API_URL = 'https://api.mythwork.ai'
 const STAGING_API_URL = 'https://api.llama.space'
-const PROD_AUTH_ORIGIN = 'https://auth.myth.work'
+const PROD_AUTH_ORIGIN = 'https://auth.mythwork.ai'
 const STAGING_AUTH_ORIGIN = 'https://auth.llama.space'
+const PROD_APP_ZONE = 'myth.work'
+const STAGING_APP_ZONE = 'llama.space'
 
 /**
  * Resolve which backend pair to use. Precedence:
@@ -90,14 +92,14 @@ const STAGING_AUTH_ORIGIN = 'https://auth.llama.space'
  *      `--staging` unless `MYTH_AUTH_URL` is set).
  *   2. `MYTH_API_URL` env var.
  *   3. `--staging` flag → api.llama.space + auth.llama.space.
- *   4. Default → api.myth.work + auth.myth.work.
+ *   4. Default → api.mythwork.ai + auth.mythwork.ai.
  */
 export function resolveBackend(opts: {
   staging?: boolean
   apiUrl?: string
   authOrigin?: string
   env?: NodeJS.ProcessEnv
-}): { apiUrl: string; authOrigin: string } {
+}): { apiUrl: string; authOrigin: string; appZone: string } {
   const env = opts.env ?? process.env
   const apiUrl =
     opts.apiUrl ??
@@ -107,7 +109,8 @@ export function resolveBackend(opts: {
     opts.authOrigin ??
     env.MYTH_AUTH_URL ??
     (opts.staging ? STAGING_AUTH_ORIGIN : PROD_AUTH_ORIGIN)
-  return { apiUrl, authOrigin }
+  const appZone = env.MYTH_APP_ZONE ?? (opts.staging ? STAGING_APP_ZONE : PROD_APP_ZONE)
+  return { apiUrl, authOrigin, appZone }
 }
 
 /**
@@ -264,9 +267,8 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
       ? ((config as { defaultPublishName?: string }).defaultPublishName as string)
       : undefined)
 
-  const { apiUrl, authOrigin } = resolveBackend(opts)
+  const { apiUrl, authOrigin, appZone } = resolveBackend(opts)
   const pinnedProjectId = resolvePinnedProjectId(config)
-  const zoneSuffix = inferZoneSuffix(apiUrl)
   console.log(
     `[myth] Project: ${config.name}${pinnedProjectId ? ` (pinned ${pinnedProjectId})` : ''}`,
   )
@@ -322,9 +324,9 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   // match skips. Skipping mints no commit, so commit dates stay meaningful.
   if (!opts.force) {
     const targetUrl = opts.apex
-      ? `https://${zoneSuffix}/`
+      ? `https://${appZone}/`
       : shortName
-        ? `https://${shortName}.${zoneSuffix}/`
+        ? `https://${shortName}.${appZone}/`
         : null
     if (targetUrl) {
       const served = await servedTreeLabel(targetUrl)
@@ -455,12 +457,12 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     )
   }
   console.log('[myth] ✓ Published. (Live for you now; public once the safety scan passes.)')
-  console.log(`[myth]   Canonical: https://${result.canonical}.${zoneSuffix}`)
+  console.log(`[myth]   Canonical: https://${result.canonical}.${appZone}`)
   if (result.alias) {
-    console.log(`[myth]   Alias:     https://${result.alias}.${zoneSuffix}`)
+    console.log(`[myth]   Alias:     https://${result.alias}.${appZone}`)
   }
   if (result.apex) {
-    console.log(`[myth]   Apex:      https://${zoneSuffix}  (default app set)`)
+    console.log(`[myth]   Apex:      https://${appZone}  (default app set)`)
   }
   printPublishWarnings(result.warnings)
   if (result.deferred) {
@@ -492,7 +494,7 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
     deferred: result.deferred,
   })
   if (shouldStream) {
-    const aliasUrl = result.alias ? `${result.alias}.${zoneSuffix}` : undefined
+    const aliasUrl = result.alias ? `${result.alias}.${appZone}` : undefined
     const pollResult = await pollBuildStatus(result.tree, {
       apiUrl,
       sessionToken: session.token,
@@ -518,16 +520,12 @@ export async function subscribeCommand(opts: {
 }): Promise<void> {
   const { apiUrl, authOrigin } = resolveBackend(opts)
   const session = await acquireSessionToken(authOrigin)
-  const zoneSuffix = inferZoneSuffix(apiUrl)
   console.log(`[myth] Subscribing to build status for ${opts.tree.slice(0, 12)}…`)
   const pollResult = await pollBuildStatus(opts.tree, {
     apiUrl,
     sessionToken: session.token,
     aliasUrl: undefined,
   })
-  // surfacing a deploy URL isn't possible here (no alias info at subscribe time),
-  // but the poller still prints "App deployed" on success.
-  void zoneSuffix
   if (pollResult.exitCode !== 0) {
     process.exitCode = pollResult.exitCode
   }
@@ -575,23 +573,6 @@ function hostProvidedDepName(w: string): string | null {
   const head = semi === -1 ? w.slice('Ignoring '.length) : w.slice('Ignoring '.length, semi)
   const at = head.lastIndexOf('@')
   return at > 0 ? head.slice(0, at) : head
-}
-
-/**
- * Derive the serve zone (the host suffix that maps to the serve worker)
- * from the API URL. api.myth.work serves *.myth.work; api.llama.space
- * serves *.llama.space. Defaults to myth.work for unparseable URLs
- * (which is the prod default — see resolveBackend).
- */
-export function inferZoneSuffix(apiUrl: string): string {
-  try {
-    const u = new URL(apiUrl)
-    const host = u.hostname
-    if (host.startsWith('api.')) return host.slice(4)
-    return host
-  } catch {
-    return 'myth.work'
-  }
 }
 
 export function formatBytes(n: number): string {

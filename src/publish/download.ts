@@ -18,7 +18,7 @@ import { indexPackObjects, type IndexedObject } from './read-objects.js'
 export interface DownloadOptions {
   /** The published alias to fetch, e.g. "my-app" for my-app.myth.work. */
   name: string
-  /** When true, target api.llama.space (staging). Default: api.myth.work (prod). */
+  /** When true, target api.llama.space (staging). Default: api.mythwork.ai (prod). */
   staging?: boolean
   /** Override the worker base URL (escape hatch for local dev). */
   apiUrl?: string

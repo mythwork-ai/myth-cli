@@ -10,8 +10,8 @@ describe("resolveStage", () => {
   it("defaults to prod (matches `myth publish`)", () => {
     const s = resolveStage();
     expect(s.name).toBe("prod");
-    expect(s.apiOrigin).toBe("https://api.myth.work");
-    expect(s.authOrigin).toBe("https://auth.myth.work");
+    expect(s.apiOrigin).toBe("https://api.mythwork.ai");
+    expect(s.authOrigin).toBe("https://auth.mythwork.ai");
     expect(s.serveOrigin).toBe("https://myth.work");
     expect(s.collabUrl).toBe("wss://collab.myth.work");
   });

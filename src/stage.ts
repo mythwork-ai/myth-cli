@@ -39,8 +39,8 @@ const STAGES: Record<Stage["name"], Stage> = {
   prod: {
     name: "prod",
     label: "myth.work (prod)",
-    apiOrigin: "https://api.myth.work",
-    authOrigin: "https://auth.myth.work",
+    apiOrigin: "https://api.mythwork.ai",
+    authOrigin: "https://auth.mythwork.ai",
     serveOrigin: "https://myth.work",
     collabUrl: "wss://collab.myth.work",
   },

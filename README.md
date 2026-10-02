@@ -64,7 +64,7 @@ myth publish --name my-app
 This:
 
 1. Packages your app's **source** (no local build — see below).
-2. Opens your browser to sign in (one-time per publish — Google OAuth via `auth.myth.work`).
+2. Opens your browser to sign in (one-time per publish — Google OAuth via `auth.mythwork.ai`).
 3. Uploads the source as git-format objects to the publish worker.
 4. Prints the canonical URL (content-addressed) and your `my-app.myth.work` alias.
 
@@ -81,7 +81,7 @@ Your app is **live for you immediately**, and becomes **public once an automated
 - **CSS**: relative CSS imports (`import './index.css'`) are inlined automatically.
 - **Tailwind**: compiled **server-side** by the platform at serve time — the CLI uploads your source untouched. Use **CSS-first config** (`@import "tailwindcss"` + `@theme`); a `tailwind.config.js` is not supported (publish will ask you to migrate it).
 
-By default this publishes to **prod** (`api.myth.work`). Pass `--staging` to publish to `api.llama.space` instead (useful for testing the publish flow without touching prod):
+By default this publishes to **prod** (`api.mythwork.ai`). Pass `--staging` to publish to `api.llama.space` instead (useful for testing the publish flow without touching prod):
 
 ```bash
 myth publish --name my-app --staging
@@ -122,7 +122,7 @@ myth publish [--name <shortName>] [--default] [--force] [--staging] [--api <url>
 | `--name` | none (canonical only) | Request `{name}.myth.work` alias. First-claim-wins. |
 | `--default` / `--apex` | unset | Also set this publish as the zone apex (`https://{zone}/`, the reserved `~apex` pointer). Owner-gated: your signed-in user must match the deployed `APEX_OWNER_USER_ID`. `--name ~apex` is sugar for this. |
 | `--force` | unset | Publish even when the target URL already serves identical content. Without it, an exact served-tree match no-ops (no commit minted). |
-| `--staging` | unset (publishes to prod) | Publish to `api.llama.space` instead of `api.myth.work`. |
+| `--staging` | unset (publishes to prod) | Publish to `api.llama.space` instead of `api.mythwork.ai`. |
 | `--api` | derived from `--staging` | Override the worker base URL (escape hatch for local dev). |
 
 > The entry point is auto-detected at the edge (`main.tsx` / `index.tsx` / `App.tsx` / `src/*`); there's no publish-time `--entry` flag in the source model.
@@ -131,6 +131,7 @@ Environment variables (lower precedence than flags):
 
 - `MYTH_API_URL` — same as `--api`.
 - `MYTH_AUTH_URL` — override the auth landing origin.
+- `MYTH_APP_ZONE` — override the zone published apps are served under (default `myth.work`, or `llama.space` with `--staging`).
 
 Sessions are acquired as: `MYTH_SESSION_TOKEN` env (headless/CI) → on-disk
 cache at `~/.config/myth/session-{auth-host}.json` (0600, reused until 5

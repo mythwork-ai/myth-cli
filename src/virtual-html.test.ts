@@ -129,8 +129,8 @@ describe('generateWrapperHtml (deployment-shaped dev wrapper)', () => {
   const stage = {
     name: 'prod',
     label: 'myth.work (prod)',
-    apiOrigin: 'https://api.myth.work',
-    authOrigin: 'https://auth.myth.work',
+    apiOrigin: 'https://api.mythwork.ai',
+    authOrigin: 'https://auth.mythwork.ai',
     serveOrigin: 'https://myth.work',
     collabUrl: 'wss://collab.myth.work',
   } as const
@@ -182,8 +182,8 @@ describe('hostFramePlugin legacy app-host document', () => {
   const stage = {
     name: 'prod',
     label: 'myth.work (prod)',
-    apiOrigin: 'https://api.myth.work',
-    authOrigin: 'https://auth.myth.work',
+    apiOrigin: 'https://api.mythwork.ai',
+    authOrigin: 'https://auth.mythwork.ai',
     serveOrigin: 'https://myth.work',
     collabUrl: 'wss://collab.myth.work',
   } as const
