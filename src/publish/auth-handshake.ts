@@ -36,7 +36,7 @@ export interface HandshakeResult {
 }
 
 export interface HandshakeOptions {
-  /** Origin of the auth host (e.g. https://auth.myth.work). No trailing slash. */
+  /** Origin of the auth host (e.g. https://auth.mythwork.ai). No trailing slash. */
   authOrigin: string
   /** How long to wait before giving up. Default 5 minutes. */
   timeoutMs?: number

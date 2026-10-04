@@ -26,7 +26,7 @@ import { encodePack } from './pack-codec.js'
 import { pullCommand } from './pull.js'
 
 const TOKEN = 'fake.session.jwt'
-const PROD_API = 'https://api.myth.work'
+const PROD_API = 'https://api.mythwork.ai'
 const STAGING_API = 'https://api.llama.space'
 
 function jsonRes(body: unknown, status = 200): Response {

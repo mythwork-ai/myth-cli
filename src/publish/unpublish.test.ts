@@ -9,7 +9,7 @@
  *   - 401 → session_expired error code.
  *   - 400 → bad_bundle error code (invalid shortName).
  *   - 5xx → backend_down error code.
- *   - --staging URL selection (api.llama.space vs api.myth.work).
+ *   - --staging URL selection (api.llama.space vs api.mythwork.ai).
  *   - Missing --name errors before any network call (enforced at the bin layer).
  *
  * The config-loading step is bypassed by pointing opts.cwd at a temp
@@ -28,7 +28,7 @@ import { deletePublishedSite, PublishError } from './client.js'
 // ---------------------------------------------------------------------------
 
 const TOKEN = 'fake.session.jwt'
-const PROD_API = 'https://api.myth.work'
+const PROD_API = 'https://api.mythwork.ai'
 const STAGING_API = 'https://api.llama.space'
 
 function jsonRes(body: unknown, status = 200): Response {

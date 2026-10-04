@@ -15,7 +15,7 @@ import { encodePack, encodeVarint } from './pack-codec.js'
 import { ejectCommand } from './eject.js'
 
 const TOKEN = 'fake.session.jwt'
-const PROD_API = 'https://api.myth.work'
+const PROD_API = 'https://api.mythwork.ai'
 const STAGING_API = 'https://api.llama.space'
 const enc = new TextEncoder()
 

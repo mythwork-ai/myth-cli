@@ -35,7 +35,7 @@ export const DEFAULT_MAX_PACK_ENTRIES = 200_000
 export const DEFAULT_MAX_PACK_BYTES = 512 * 1024 * 1024
 
 export interface FetchObjectPackOptions {
-  /** Worker base URL — e.g. https://api.myth.work or https://api.llama.space. */
+  /** Worker base URL — e.g. https://api.mythwork.ai or https://api.llama.space. */
   apiUrl: string
   /** Session JWT from the auth handshake. */
   sessionToken: string

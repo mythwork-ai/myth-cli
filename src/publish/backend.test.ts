@@ -1,23 +1,23 @@
 /**
  * Tests for the backend zone selection logic. The CLI defaults to
- * prod (api.myth.work + auth.myth.work) and only switches to
+ * prod (api.mythwork.ai + auth.mythwork.ai) and only switches to
  * staging (api.llama.space + auth.llama.space) when --staging is passed.
  *
  * Per spec section "Sample session" and "Backend changes required":
- *   default → api.myth.work / auth.myth.work
+ *   default → api.mythwork.ai / auth.mythwork.ai
  *   --staging → api.llama.space / auth.llama.space
  *   --api or MYTH_API_URL → override
  *   MYTH_AUTH_URL → override auth side independently
  */
 
 import { describe, expect, it } from 'vitest'
-import { resolveBackend, inferZoneSuffix, formatBytes } from './index.js'
+import { resolveBackend, formatBytes } from './index.js'
 
 describe('resolveBackend', () => {
   it('defaults to prod when --staging is not set', () => {
     const { apiUrl, authOrigin } = resolveBackend({ env: {} })
-    expect(apiUrl).toBe('https://api.myth.work')
-    expect(authOrigin).toBe('https://auth.myth.work')
+    expect(apiUrl).toBe('https://api.mythwork.ai')
+    expect(authOrigin).toBe('https://auth.mythwork.ai')
   })
 
   it('switches to staging when --staging is set', () => {
@@ -33,7 +33,7 @@ describe('resolveBackend', () => {
     })
     expect(apiUrl).toBe('http://localhost:8787')
     // Auth still defaults to prod (no --staging).
-    expect(authOrigin).toBe('https://auth.myth.work')
+    expect(authOrigin).toBe('https://auth.mythwork.ai')
   })
 
   it('lets MYTH_API_URL override the API URL', () => {
@@ -59,16 +59,18 @@ describe('resolveBackend', () => {
   })
 })
 
-describe('inferZoneSuffix', () => {
-  it('strips the api. prefix to get the serve zone', () => {
-    expect(inferZoneSuffix('https://api.myth.work')).toBe('myth.work')
-    expect(inferZoneSuffix('https://api.llama.space')).toBe('llama.space')
+describe('resolveBackend appZone', () => {
+  it('serves prod apps under myth.work', () => {
+    expect(resolveBackend({ env: {} }).appZone).toBe('myth.work')
   })
-  it('returns the host unchanged when there is no api. prefix', () => {
-    expect(inferZoneSuffix('http://localhost:9999')).toBe('localhost')
+  it('serves staging apps under llama.space', () => {
+    expect(resolveBackend({ staging: true, env: {} }).appZone).toBe('llama.space')
   })
-  it('falls back to myth.work for an unparseable URL', () => {
-    expect(inferZoneSuffix('not a url')).toBe('myth.work')
+  it('does not follow an --api override', () => {
+    expect(resolveBackend({ apiUrl: 'https://api.example.test', env: {} }).appZone).toBe('myth.work')
+  })
+  it('lets MYTH_APP_ZONE override the app zone', () => {
+    expect(resolveBackend({ staging: true, env: { MYTH_APP_ZONE: 'localhost' } }).appZone).toBe('localhost')
   })
 })
 

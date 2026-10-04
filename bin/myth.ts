@@ -82,7 +82,7 @@ Usage:
                [--no-wait]       Skip build-status streaming; exit after upload.
                [--watch]         Stream build status even in non-TTY / CI.
                [--subscribe <t>] Stream status for an already-published tree.
-                                 Default backend is prod (api.myth.work);
+                                 Default backend is prod (api.mythwork.ai);
                                  --staging uses api.llama.space.
   myth unpublish --name <name>   Remove a published alias and release its
                [--staging]       refs for GC. --name is REQUIRED. Uses the

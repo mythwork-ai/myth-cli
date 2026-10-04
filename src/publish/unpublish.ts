@@ -9,7 +9,7 @@
  *   4. DELETE /publish/site/{name} with Bearer JWT.
  *   5. Print a success/error message.
  *
- * Default backend is prod (api.myth.work). `--staging` switches to
+ * Default backend is prod (api.mythwork.ai). `--staging` switches to
  * api.llama.space. `--api` overrides entirely.
  */
 
@@ -22,7 +22,7 @@ export interface UnpublishOptions {
   cwd: string
   /** The alias short-name to delete. REQUIRED. */
   name: string
-  /** When true, target api.llama.space (staging). Default: api.myth.work (prod). */
+  /** When true, target api.llama.space (staging). Default: api.mythwork.ai (prod). */
   staging?: boolean
   /** Override the worker base URL (escape hatch for local dev). */
   apiUrl?: string

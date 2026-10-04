@@ -35,7 +35,7 @@ export const MAX_PARALLEL_UPLOADS = 16
 const PUT_RETRY_DELAYS_MS = [250, 500, 1000]
 
 export interface PublishClientOptions {
-  /** Worker base URL — e.g. https://api.myth.work or https://api.llama.space. */
+  /** Worker base URL — e.g. https://api.mythwork.ai or https://api.llama.space. */
   apiUrl: string
   /** Session JWT from the auth handshake. */
   sessionToken: string
@@ -459,7 +459,7 @@ export async function mapErrorResponse(
 // ===========================================================================
 
 export interface UnpublishClientOptions {
-  /** Worker base URL — e.g. https://api.myth.work or https://api.llama.space. */
+  /** Worker base URL — e.g. https://api.mythwork.ai or https://api.llama.space. */
   apiUrl: string
   /** Session JWT from the auth handshake. */
   sessionToken: string
@@ -575,7 +575,7 @@ export interface ResolveSiteResult {
 }
 
 export interface ResolveSiteOptions {
-  /** Worker base URL — e.g. https://api.myth.work or https://api.llama.space. */
+  /** Worker base URL — e.g. https://api.mythwork.ai or https://api.llama.space. */
   apiUrl: string
   /** Session JWT from the auth handshake. */
   sessionToken: string
