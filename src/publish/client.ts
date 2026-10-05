@@ -399,7 +399,9 @@ export async function mapErrorResponse(
   if (status === 401) {
     return new PublishError(
       'session_expired',
-      'Session expired. Re-run `myth publish`.',
+      serverMsg
+        ? `Session expired. Re-run \`myth publish\`. (${serverMsg})`
+        : 'Session expired. Re-run `myth publish`.',
       { status, hash: ctx.hash, shortName: ctx.shortName },
     )
   }
