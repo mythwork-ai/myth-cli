@@ -69,9 +69,8 @@ describe('publishCommand pinned-projectId fallback (AGE-81)', () => {
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
       calls.push({ url: u, method, body })
       if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
-      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
-      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTEDxyz7890000'] })
-      if (u.endsWith('/project/claim')) return jsonRes({ projectId: 'pPROVISIONEDxyz789', alias: 'tennis-demo-ab12' })
+      if (u.endsWith('/projects') && method === 'GET') return jsonRes({ projects: [] })
+      if (u.endsWith('/projects') && method === 'POST') return jsonRes({ projectId: 'pPROVISIONEDxyz789', alias: 'tennis-demo-ab12' })
       if (u.endsWith('/publish')) {
         finalizeCount++
         if (finalizeCount === 1) {
@@ -85,10 +84,10 @@ describe('publishCommand pinned-projectId fallback (AGE-81)', () => {
 
     await publishCommand({ cwd: root, shortName: 'tennis-demo', staging: true, force: true })
 
-    // (1) fallback claim carries the projectName (the caller owned nothing yet)
-    const claim = calls.find(c => c.url.endsWith('/project/claim'))
-    expect(claim).toBeDefined()
-    expect(claim?.body).toEqual({ projectId: 'pMINTEDxyz7890000', projectName: 'tennis-demo' })
+    // (1) fallback create carries the projectName (the caller owned nothing yet)
+    const create = calls.find(c => c.url.endsWith('/projects') && c.method === 'POST')
+    expect(create).toBeDefined()
+    expect(create?.body).toEqual({ projectName: 'tennis-demo' })
 
     // (2) AGE-81: the committed pin is NOT rewritten — it stays exactly as authored.
     const cfg = JSON.parse(await readFile(path.join(root, 'myth.config.json'), 'utf-8')) as {
@@ -110,7 +109,7 @@ describe('publishCommand pinned-projectId fallback (AGE-81)', () => {
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url)
       if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
-      if (u.endsWith('/projects') || u.endsWith('/project/pool?n=1') || u.endsWith('/project/claim')) {
+      if (u.endsWith('/projects')) {
         resolveCalled = true
         return jsonRes({ projectId: 'x', projects: [], ids: ['x'] })
       }
@@ -130,9 +129,7 @@ describe('publishCommand pinned-projectId fallback (AGE-81)', () => {
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url)
       if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
-      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
-      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTED999000000'] })
-      if (u.endsWith('/project/claim')) return jsonRes({ projectId: 'pPROV999' })
+      if (u.endsWith('/projects')) return init?.method === 'POST' ? jsonRes({ projectId: 'pPROV999' }) : jsonRes({ projects: [] })
       if (u.endsWith('/publish')) {
         finalizeCount++
         return jsonRes({ error: 'projectId ownership mismatch', code: 'project_ownership' }, 403)
@@ -181,9 +178,7 @@ describe('publishCommand name-only resolve-via-provision (AGE-81)', () => {
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
       calls.push({ url: u, method: init?.method ?? 'GET', body })
       if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
-      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
-      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTED12345zzzz'] })
-      if (u.endsWith('/project/claim')) return jsonRes({ projectId: 'pRESOLVED12345', alias: 'tennis-demo-zz' })
+      if (u.endsWith('/projects')) return init?.method === 'POST' ? jsonRes({ projectId: 'pRESOLVED12345', alias: 'tennis-demo-zz' }) : jsonRes({ projects: [] })
       if (u.endsWith('/publish')) return jsonRes({ commit: 'a'.repeat(64), tree: 'b'.repeat(64), canonical: 'c'.repeat(52), alias: 'tennis-demo' })
       throw new Error(`unexpected fetch: ${u}`)
     }) as unknown as typeof fetch
@@ -191,9 +186,8 @@ describe('publishCommand name-only resolve-via-provision (AGE-81)', () => {
 
     await publishCommand({ cwd: root, shortName: 'tennis-demo', staging: true, force: true })
 
-    // resolve claims the project: claim carries the projectName
-    const claim = calls.find(c => c.url.endsWith('/project/claim'))
-    expect(claim?.body).toEqual({ projectId: 'pMINTED12345zzzz', projectName: 'tennis-demo' })
+    const create = calls.find(c => c.url.endsWith('/projects') && c.method === 'POST')
+    expect(create?.body).toEqual({ projectName: 'tennis-demo' })
 
     // AGE-81: NO write-back — the committed config stays name-only.
     const cfg = JSON.parse(await readFile(path.join(root, 'myth.config.json'), 'utf-8')) as {
@@ -218,9 +212,7 @@ describe('publishCommand name-only resolve-via-provision (AGE-81)', () => {
         const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
         calls.push({ url: u, method: init?.method ?? 'GET', body })
         if (u.endsWith('/publish/check')) return jsonRes({ missing: [] })
-        if (u.endsWith('/projects')) return jsonRes({ projects: [] })
-        if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['shouldNotMint000'] })
-        if (u.endsWith('/project/claim')) return jsonRes({ projectId: 'shouldNotClaim' })
+        if (u.endsWith('/projects')) return init?.method === 'POST' ? jsonRes({ projectId: 'shouldNotCreate' }) : jsonRes({ projects: [] })
         if (u.endsWith('/publish')) return jsonRes({ commit: 'a'.repeat(64), tree: 'b'.repeat(64), canonical: 'c'.repeat(52), alias: 'tennis-demo' })
         throw new Error(`unexpected fetch: ${u}`)
       }) as unknown as typeof fetch
@@ -230,8 +222,7 @@ describe('publishCommand name-only resolve-via-provision (AGE-81)', () => {
 
       // the env pin goes STRAIGHT to finalize — the resolve endpoints (which
       // reject/mint under OIDC) are never touched
-      expect(calls.find(c => c.url.endsWith('/project/claim'))).toBeUndefined()
-      expect(calls.find(c => c.url.endsWith('/project/pool?n=1'))).toBeUndefined()
+      expect(calls.find(c => c.url.endsWith('/projects'))).toBeUndefined()
       const finals = calls.filter(c => c.url.endsWith('/publish') && c.method === 'POST')
       expect(finals).toHaveLength(1)
       expect(finals[0].body?.projectId).toBe('envPINnedpid12345')
