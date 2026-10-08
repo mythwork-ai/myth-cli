@@ -485,6 +485,13 @@ describe('mapErrorResponse', () => {
     const e401 = await mapErrorResponse(jsonRes({}, 401), { context: 'check' })
     expect(e401).toBeInstanceOf(PublishError)
     expect(e401.code).toBe('session_expired')
+    expect(e401.message).toBe('Session expired. Re-run `myth publish`.')
+
+    const e401WithReason = await mapErrorResponse(jsonRes({ error: 'unknown OIDC subject' }, 401), {
+      context: 'publish',
+    })
+    expect(e401WithReason.code).toBe('session_expired')
+    expect(e401WithReason.message).toBe('Session expired. Re-run `myth publish`. (unknown OIDC subject)')
 
     const e403 = await mapErrorResponse(jsonRes({}, 403), {
       context: 'publish',
