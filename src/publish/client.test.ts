@@ -514,8 +514,8 @@ describe('mapErrorResponse', () => {
   })
 })
 
-describe('provisionProject (GET /projects → GET /project/pool → POST /project/claim)', () => {
-  it('rediscovers an owned project by exact auto-alias, skipping pool+claim', async () => {
+describe('provisionProject (GET /projects → POST /projects)', () => {
+  it('rediscovers an owned project by exact auto-alias, skipping create', async () => {
     const urls: string[] = []
     const fakeFetch = vi.fn(async (url: RequestInfo | URL) => {
       urls.push(String(url))
@@ -551,12 +551,16 @@ describe('provisionProject (GET /projects → GET /project/pool → POST /projec
     expect(pid).toBe('pPREFIXED99')
   })
 
-  it('does NOT match a non-owner or unrelated alias — falls through to pool+claim', async () => {
+  it('does NOT match a non-owner or unrelated alias — falls through to POST /projects', async () => {
     const urls: string[] = []
-    let claimBody: Record<string, unknown> = {}
+    let createBody: Record<string, unknown> = {}
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url)
       urls.push(u)
+      if (u.endsWith('/projects') && init?.method === 'POST') {
+        createBody = JSON.parse(String(init?.body))
+        return jsonRes({ projectId: 'pCLAIMED111', alias: 'website-tennis-ab12' })
+      }
       if (u.endsWith('/projects')) {
         return jsonRes({
           projects: [
@@ -564,11 +568,6 @@ describe('provisionProject (GET /projects → GET /project/pool → POST /projec
             { projectId: 'pOTHERAPP', alias: 'other-app', role: 'owner' },
           ],
         })
-      }
-      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTED0000000000'] })
-      if (u.endsWith('/project/claim')) {
-        claimBody = JSON.parse(String(init?.body))
-        return jsonRes({ projectId: 'pCLAIMED111', alias: 'website-tennis-ab12' })
       }
       throw new Error(`unexpected ${u}`)
     }) as unknown as typeof fetch
@@ -580,18 +579,19 @@ describe('provisionProject (GET /projects → GET /project/pool → POST /projec
       fetch: fakeFetch,
     })
     expect(pid).toBe('pCLAIMED111')
-    expect(urls).toEqual([`${API}/projects`, `${API}/project/pool?n=1`, `${API}/project/claim`])
-    expect(claimBody).toEqual({ projectId: 'pMINTED0000000000', projectName: 'website-tennis' })
+    expect(urls).toEqual([`${API}/projects`, `${API}/projects`])
+    expect(createBody).toEqual({ projectName: 'website-tennis' })
   })
 
-  it('pool+claims a fresh project when the caller owns nothing yet (first publish)', async () => {
-    let claimAuth: string | null = null
+  it('creates a fresh project via POST /projects when the caller owns nothing yet (first publish)', async () => {
+    let createAuth: string | null = null
+    let createCall: { url: string; method: string | undefined } | null = null
     const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url)
-      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
-      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTEDfresh00000'] })
-      if (u.endsWith('/project/claim')) {
-        claimAuth = new Headers(init?.headers).get('Authorization')
+      if (u.endsWith('/projects') && init?.method !== 'POST') return jsonRes({ projects: [] })
+      if (u.endsWith('/projects')) {
+        createCall = { url: u, method: init?.method }
+        createAuth = new Headers(init?.headers).get('Authorization')
         return jsonRes({ projectId: 'pFIRSTCLAIM', alias: 'disco-zz99' })
       }
       throw new Error(`unexpected ${u}`)
@@ -604,7 +604,8 @@ describe('provisionProject (GET /projects → GET /project/pool → POST /projec
       fetch: fakeFetch,
     })
     expect(pid).toBe('pFIRSTCLAIM')
-    expect(claimAuth).toBe(`Bearer ${TOKEN}`)
+    expect(createCall).toEqual({ url: `${API}/projects`, method: 'POST' })
+    expect(createAuth).toBe(`Bearer ${TOKEN}`)
   })
 
   it('maps a 401 from GET /projects to session_expired', async () => {
@@ -614,22 +615,21 @@ describe('provisionProject (GET /projects → GET /project/pool → POST /projec
     ).rejects.toMatchObject({ code: 'session_expired' })
   })
 
-  it('maps a 401 from POST /project/claim to session_expired', async () => {
-    const fakeFetch = vi.fn(async (url: RequestInfo | URL) => {
+  it('maps a 401 from POST /projects to session_expired', async () => {
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url)
-      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
-      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTED0000000000'] })
-      return jsonRes({ error: 'sign in to claim' }, 401)
+      if (u.endsWith('/projects') && init?.method !== 'POST') return jsonRes({ projects: [] })
+      return jsonRes({ error: 'sign in to create' }, 401)
     }) as unknown as typeof fetch
     await expect(
       provisionProject({ apiUrl: API, sessionToken: TOKEN, localId: 'x', projectName: 'x', fetch: fakeFetch }),
     ).rejects.toMatchObject({ code: 'session_expired' })
   })
 
-  it('maps a non-ok pool mint (5xx) to backend_down', async () => {
-    const fakeFetch = vi.fn(async (url: RequestInfo | URL) => {
+  it('maps a non-ok POST /projects (5xx) to backend_down', async () => {
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url)
-      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
+      if (u.endsWith('/projects') && init?.method !== 'POST') return jsonRes({ projects: [] })
       return jsonRes({ error: 'boom' }, 500)
     }) as unknown as typeof fetch
     await expect(
@@ -637,11 +637,10 @@ describe('provisionProject (GET /projects → GET /project/pool → POST /projec
     ).rejects.toMatchObject({ code: 'backend_down' })
   })
 
-  it('throws unknown when claim returns no projectId', async () => {
-    const fakeFetch = vi.fn(async (url: RequestInfo | URL) => {
+  it('throws unknown when create returns no projectId', async () => {
+    const fakeFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url)
-      if (u.endsWith('/projects')) return jsonRes({ projects: [] })
-      if (u.endsWith('/project/pool?n=1')) return jsonRes({ ids: ['pMINTED0000000000'] })
+      if (u.endsWith('/projects') && init?.method !== 'POST') return jsonRes({ projects: [] })
       return jsonRes({ alias: 'x' })
     }) as unknown as typeof fetch
     await expect(

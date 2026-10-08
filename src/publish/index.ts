@@ -405,9 +405,8 @@ export async function publishCommand(opts: PublishOptions): Promise<void> {
   //
   //  - Name-only config (the normal case): resolve the project at publish via
   //    provisionProject — GET /projects rediscovers the owner's prior claim by
-  //    its `{slug}`/`{slug}-xxxxxx` auto-alias, else GET /project/pool + POST
-  //    /project/claim mints one (AGE-114 replaced the old single-call
-  //    /project/provision). Idempotent per (owner, slug): repeat publishes reuse
+  //    its `{slug}`/`{slug}-xxxxxx` auto-alias, else POST /projects creates
+  //    one. Idempotent per (owner, slug): repeat publishes reuse
   //    the same project, so there is no write-back, no sidecar, no state to
   //    drift. Two users publishing the same app name each converge on their own
   //    project per stage.

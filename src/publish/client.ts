@@ -772,14 +772,14 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 // ===========================================================================
-// Project resolution (AGE-114: GET /project/pool + POST /project/claim)
+// Project resolution (GET /projects + POST /projects)
 // ===========================================================================
 
 export interface ProvisionOptions {
   apiUrl: string
   sessionToken: string
   /** Slugified app name (`slugifyLocalId(config.name)`). Used to rediscover an
-   *  already-claimed owned project by its `{localId}`/`{localId}-xxxxxx`
+   *  already-created owned project by its `{localId}`/`{localId}-xxxxxx`
    *  auto-alias, so repeat publishes converge on one project (no strays). */
   localId: string
   projectName: string
@@ -793,22 +793,12 @@ interface ProjectRow {
 }
 
 /**
- * Resolve (or claim) the caller's canonical project for this app.
+ * Resolve (or create) the caller's canonical project for this app.
  *
- * The old single-call `POST /project/provision` (idempotent by (owner,
- * localId)) was removed by AGE-114 in favour of `GET /project/pool` (stateless
- * mint) + `POST /project/claim` (bind a minted id to its first owner). Claim is
- * idempotent by *projectId*, not by a free-form key, and a pool-minted id is
- * fresh random — so to avoid a new stray project on every publish we first
- * rediscover our own prior claim via `GET /projects`, matching the
+ * Rediscovers the caller's prior project via `GET /projects`, matching the
  * `{localId}` / `{localId}-xxxxxx` auto-alias, before falling back to
- * pool+claim. This mirrors mythwork's own CI publisher (`resolveProject` in
- * `scripts/lib/ci-publish-lib.mjs`) and the host-iframe pool→claim path.
- *
- * Because claim binds to the CALLER, this can never hand back another user's
- * project — auto-resolve on a publish ownership 403 yields the user's OWN
- * project, it does not bypass the ownership gate. Returns the canonical
- * projectId.
+ * `POST /projects`. Both bind to the CALLER, so this never returns another
+ * user's project. Returns the canonical projectId.
  */
 export async function provisionProject(opts: ProvisionOptions): Promise<string> {
   const fetchImpl = opts.fetch ?? fetch
@@ -833,42 +823,27 @@ export async function provisionProject(opts: ProvisionOptions): Promise<string> 
     if (match) return match.projectId
   }
 
-  const poolRes = await fetchImpl(`${opts.apiUrl}/project/pool?n=1`)
-  if (!poolRes.ok) {
-    const text = await poolRes.text().catch(() => '')
-    throw new PublishError(
-      'backend_down',
-      `Project id mint failed (${poolRes.status})${text ? `: ${text.slice(0, 200)}` : ''}.`,
-      { status: poolRes.status },
-    )
-  }
-  const pool = (await poolRes.json().catch(() => null)) as { ids?: unknown } | null
-  const mintedId = Array.isArray(pool?.ids) ? pool.ids[0] : undefined
-  if (typeof mintedId !== 'string') {
-    throw new PublishError('unknown', 'Project id mint returned no ids.')
-  }
-
-  const claimRes = await fetchImpl(`${opts.apiUrl}/project/claim`, {
+  const createRes = await fetchImpl(`${opts.apiUrl}/projects`, {
     method: 'POST',
     headers: { ...auth, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectId: mintedId, projectName: opts.projectName }),
+    body: JSON.stringify({ projectName: opts.projectName }),
   })
-  if (!claimRes.ok) {
-    if (claimRes.status === 401) {
-      throw new PublishError('session_expired', 'Session expired during project claim.', {
-        status: claimRes.status,
+  if (!createRes.ok) {
+    if (createRes.status === 401) {
+      throw new PublishError('session_expired', 'Session expired during project creation.', {
+        status: createRes.status,
       })
     }
-    const text = await claimRes.text().catch(() => '')
+    const text = await createRes.text().catch(() => '')
     throw new PublishError(
       'backend_down',
-      `Project claim failed (${claimRes.status})${text ? `: ${text.slice(0, 200)}` : ''}.`,
-      { status: claimRes.status },
+      `Project creation failed (${createRes.status})${text ? `: ${text.slice(0, 200)}` : ''}.`,
+      { status: createRes.status },
     )
   }
-  const parsed = (await claimRes.json().catch(() => null)) as { projectId?: unknown } | null
+  const parsed = (await createRes.json().catch(() => null)) as { projectId?: unknown } | null
   if (!parsed || typeof parsed.projectId !== 'string') {
-    throw new PublishError('unknown', 'Project claim returned no projectId.')
+    throw new PublishError('unknown', 'Project creation returned no projectId.')
   }
   return parsed.projectId
 }
