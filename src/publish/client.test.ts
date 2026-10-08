@@ -350,6 +350,48 @@ describe('finalizePublish', () => {
     })
   })
 
+  it('maps a content-scan refusal 403 to scan_refused with the reason', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'scan failed', reason: 'phishing intent' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ) as unknown as typeof fetch
+    const err = await finalizePublish('a'.repeat(64), {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      rootTree: ROOT_TREE,
+      shortName: 'myapp',
+      fetch: fakeFetch,
+    }).catch((e: unknown) => e as PublishError)
+    expect(err).toMatchObject({
+      code: 'scan_refused',
+      message: "Publishing didn't go through. The content check refused this app: phishing intent",
+    })
+    expect((err as PublishError).message).not.toContain('belongs to another user')
+  })
+
+  it('maps a content-scan refusal 403 with a null reason to the no-reason message', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'scan failed', reason: null }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ) as unknown as typeof fetch
+    await expect(
+      finalizePublish('a'.repeat(64), {
+        apiUrl: API,
+        sessionToken: TOKEN,
+        rootTree: ROOT_TREE,
+        shortName: 'myapp',
+        fetch: fakeFetch,
+      }),
+    ).rejects.toMatchObject({
+      code: 'scan_refused',
+      message: "Publishing didn't go through. The content check refused this app.",
+    })
+  })
+
   it('still maps an alias 403 (no projectId in server message) to name_taken', async () => {
     const fakeFetch = vi.fn(async () =>
       new Response(JSON.stringify({ error: 'shortName is owned by another user' }), {

@@ -123,6 +123,7 @@ export class PublishError extends Error {
       | 'session_expired'
       | 'name_taken'
       | 'not_owner'
+      | 'scan_refused'
       | 'not_found'
       | 'too_large'
       | 'backend_down'
@@ -363,13 +364,15 @@ export async function mapErrorResponse(
   const status = res.status
   let serverMsg: string | undefined
   let serverCode: string | undefined
+  let serverReason: string | undefined
   try {
     const text = await res.text()
     if (text) {
       try {
-        const j = JSON.parse(text) as { error?: unknown; code?: unknown; detail?: unknown }
+        const j = JSON.parse(text) as { error?: unknown; code?: unknown; reason?: unknown; detail?: unknown }
         if (typeof j.error === 'string') serverMsg = j.error
         if (typeof j.code === 'string') serverCode = j.code
+        if (typeof j.reason === 'string') serverReason = j.reason
         // The worker attaches a structured `detail` on failures the top-level
         // `error` can't describe (e.g. a 422 "compile failed" whose detail is
         // the offending file + unresolved specifier). Surface it so the user
@@ -404,6 +407,17 @@ export async function mapErrorResponse(
     )
   }
   if (status === 403) {
+    // A content-scan refusal carries `error: 'scan failed'` and a nullable
+    // `reason`, with no `code`. The wording matches the web app's publish error.
+    if (serverMsg === 'scan failed') {
+      return new PublishError(
+        'scan_refused',
+        serverReason
+          ? `Publishing didn't go through. The content check refused this app: ${serverReason}`
+          : "Publishing didn't go through. The content check refused this app.",
+        { status, shortName: ctx.shortName },
+      )
+    }
     // The worker 403s for two distinct reasons on /publish: an alias owned by
     // another user, or a projectId the session lacks a write role on. The
     // stable `code` field is the discriminator; the message substring is a
