@@ -523,6 +523,39 @@ describe('finalizePublish', () => {
 })
 
 describe('mapErrorResponse', () => {
+  const refusalBodies: Array<[string, { error: string; code?: string }]> = [
+    ['project_mismatch', { error: 'projectId outside the build assertion', code: 'project_mismatch' }],
+    ['apex_build_auth', { error: 'a build assertion may not set the apex default', code: 'apex_build_auth' }],
+    ['alias_project_mismatch', { error: 'shortName belongs to a different project', code: 'alias_project_mismatch' }],
+    ['tree_ownership', { error: 'source or bundle tree was not uploaded from this project', code: 'tree_ownership' }],
+    ['blocked', { error: 'blocked' }],
+    ['reserved', { error: "'admin' is reserved for a system user" }],
+  ]
+
+  it.each(refusalBodies)('403 %s shows the server reason', async (_name, body) => {
+    const e = await mapErrorResponse(jsonRes(body, 403), { context: 'publish', shortName: 'foo' })
+    expect(e.message).toContain(body.error)
+    if (body.code) expect(e.message).toContain(body.code)
+    expect(e.message).not.toContain('belongs to another user')
+  })
+
+  it('403 project_ownership keeps the config guidance', async () => {
+    const e = await mapErrorResponse(
+      jsonRes({ error: 'projectId ownership mismatch', code: 'project_ownership' }, 403),
+      { context: 'publish', shortName: 'foo' },
+    )
+    expect(e.code).toBe('not_owner')
+    expect(e.message).toContain('Check the "projectId" in myth.config.json.')
+  })
+
+  it('403 alias claimed by another publisher keeps the name guidance', async () => {
+    const e = await mapErrorResponse(
+      jsonRes({ error: 'shortName already claimed by a different publisher', shortName: 'foo' }, 403),
+      { context: 'publish', shortName: 'foo' },
+    )
+    expect(e.message).toContain("The name 'foo' belongs to another user")
+  })
+
   it('produces the documented messages for each status code', async () => {
     const e401 = await mapErrorResponse(jsonRes({}, 401), { context: 'check' })
     expect(e401).toBeInstanceOf(PublishError)
