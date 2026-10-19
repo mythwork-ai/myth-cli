@@ -1,8 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { servedTreeLabel } from './crockford.js'
+import { hexToCrockford256, servedTreeLabel } from './crockford.js'
 
-// hexToCrockford256 now comes from @mythwork/shared/crockford32 — its tests
-// live there, not vendored here alongside a duplicate implementation.
+describe('hexToCrockford256', () => {
+  it('matches the canonical encoder (known answer from a live publish)', () => {
+    expect(
+      hexToCrockford256('368b1d5bc3bf92da6d535733d010bf6e95dc4af0f3d1dbb68dbd6d5ee85f6850'),
+    ).toBe('6t5htpy3qy9dmvakawsx045zdtaxrjqgyf8xqdmdqnpnxt2zd18f')
+  })
+
+  it('accepts uppercase hex like lowercase', () => {
+    const hex = '368b1d5bc3bf92da6d535733d010bf6e95dc4af0f3d1dbb68dbd6d5ee85f6850'
+    expect(hexToCrockford256(hex.toUpperCase())).toBe(hexToCrockford256(hex))
+  })
+
+  it('rejects malformed input', () => {
+    expect(hexToCrockford256('abc')).toBeNull()
+    expect(hexToCrockford256('Z'.repeat(64))).toBeNull()
+  })
+})
 
 describe('servedTreeLabel', () => {
   it('extracts the 52-char tree label from the outer page', async () => {
