@@ -9,31 +9,38 @@
  */
 
 const CROCKFORD_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz'
+const FORMAT_VERSION = 0
+const CHECK_NIBBLE_BITS = 4
+
+function checksum4(bytes: Uint8Array): number {
+  let b = 0
+  for (let i = 0; i < bytes.length; i++) b ^= bytes[i]!
+  return ((b >> 4) ^ (b & 0x0f)) & 0x0f
+}
 
 export function hexToCrockford256(hex: string): string | null {
   if (typeof hex !== 'string' || hex.length !== 64 || /[^0-9a-fA-F]/.test(hex)) return null
   const bytes = new Uint8Array(32)
   for (let i = 0; i < 32; i++) bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16)
-  let b = 0
-  for (let i = 0; i < 32; i++) b ^= bytes[i]!
-  const nibble = ((b >> 4) ^ (b & 0x0f)) & 0x0f
+  const checkNibble = (checksum4(bytes) + FORMAT_VERSION) & 0x0f
   const out: string[] = []
   let acc = 0
   let bits = 0
-  for (let i = 0; i < 32; i++) {
-    acc = (acc << 8) | bytes[i]!
-    bits += 8
+  const flush = () => {
     while (bits >= 5) {
       bits -= 5
       out.push(CROCKFORD_ALPHABET[(acc >>> bits) & 0x1f]!)
     }
+    acc &= (1 << bits) - 1
   }
-  acc = (acc << 4) | nibble
-  bits += 4
-  while (bits >= 5) {
-    bits -= 5
-    out.push(CROCKFORD_ALPHABET[(acc >>> bits) & 0x1f]!)
+  for (let i = 0; i < 32; i++) {
+    acc = (acc << 8) | bytes[i]!
+    bits += 8
+    flush()
   }
+  acc = (acc << CHECK_NIBBLE_BITS) | checkNibble
+  bits += CHECK_NIBBLE_BITS
+  flush()
   return out.join('')
 }
 

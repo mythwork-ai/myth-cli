@@ -13,6 +13,18 @@ describe('hexToCrockford256', () => {
     expect(hexToCrockford256(hex.toUpperCase())).toBe(hexToCrockford256(hex))
   })
 
+  it.each([
+    ['0000000000000000000000000000000000000000000000000000000000000000', '0000000000000000000000000000000000000000000000000000'],
+    ['ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzg'],
+    ['0123456789abcdeffedcba98765432100f1e2d3c4b5a69788796a5b4c3d2e1f0', '04hmasw9nf6yzzpwqac7cn1j207hwb9w9dd6jy47jtjv9gyjw7r0'],
+    ['deadbeefcafebabe8badf00d0ddba11fee1dead5ca1ab1e0b16b00b5c0ffee00', 'vtpvxvyaztxbx2xdy06gvpx13zq1vtpns8db3r5hdc0bbg7zxr07'],
+    ['a5a5a5a55a5a5a5a3c3c3c3cc3c3c3c3966996696996699612481248f0e1d2c3', 'mpjtb9atb9d5mf1w7gyc7gy3reb6k5k9d6b6k5gj9094hw71tb1g'],
+    ['A5A5A5A55A5A5A5A3C3C3C3CC3C3C3C3966996696996699612481248F0E1D2C3', 'mpjtb9atb9d5mf1w7gyc7gy3reb6k5k9d6b6k5gj9094hw71tb1g'],
+    ['00112233445566778899aabbccddeeff', null],
+  ])('matches the mythwork encoder for %s', (hex, expected) => {
+    expect(hexToCrockford256(hex)).toBe(expected)
+  })
+
   it('rejects malformed input', () => {
     expect(hexToCrockford256('abc')).toBeNull()
     expect(hexToCrockford256('Z'.repeat(64))).toBeNull()
