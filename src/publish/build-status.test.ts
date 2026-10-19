@@ -98,7 +98,7 @@ describe('fetchBuildStatus', () => {
 
     await expect(
       fetchBuildStatus(TREE, { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch }),
-    ).rejects.toMatchObject({ code: 'unknown', details: { status: 500 } })
+    ).rejects.toMatchObject({ code: 'status_unreadable', details: { status: 500 } })
   })
 
   it('throws with the HTTP status on a 403 refusal', async () => {
@@ -106,7 +106,7 @@ describe('fetchBuildStatus', () => {
 
     await expect(
       fetchBuildStatus(TREE, { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch }),
-    ).rejects.toMatchObject({ code: 'unknown', details: { status: 403 } })
+    ).rejects.toMatchObject({ code: 'status_unreadable', details: { status: 403 } })
   })
 
   it('treats garbage / non-JSON response body as endpoint unavailable', async () => {

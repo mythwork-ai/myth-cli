@@ -12,7 +12,9 @@
  *   pending (first seen) → print "Building with full compiler… (job <short>)"
  *   ok  → print "Build complete: success" + "App deployed" + URL, exit 0
  *   failed → print "Build failed: <reason>", exit 1
- *   status read refused (403 / other 4xx / 5xx) → print the HTTP status, exit 1
+ *   status read refused (403 / other 4xx) → print the HTTP status, exit 1
+ *   status read 5xx → keep polling; still 5xx at the timeout → print the
+ *                     last HTTP status, exit 1
  *   auth lost (401) → print re-auth + re-subscribe hint, exit 0
  *   other stream error → print one-line warning + re-subscribe hint, exit 0
  *   timeout (240s)  → print re-subscribe hint, exit 0
@@ -96,6 +98,7 @@ export async function pollBuildStatus(tree: string, opts: PollOptions): Promise<
 
   let printedPending = false
   let firstNoneAt: number | null = null
+  let lastUnreadable: PublishError | null = null
   const startedAt = nowFn()
 
   // SIGINT → detach cleanly. Aborting the controller FIRST makes the race
@@ -128,6 +131,11 @@ export async function pollBuildStatus(tree: string, opts: PollOptions): Promise<
 
       const elapsed = nowFn() - startedAt
       if (elapsed >= TOTAL_TIMEOUT_MS) {
+        if (lastUnreadable) {
+          console.log(`[myth] ✗ ${lastUnreadable.message}`)
+          console.log(`[myth]   Re-attach with:  ${resubscribeHint}`)
+          return { exitCode: 1, reason: 'status_unconfirmed' }
+        }
         console.log(
           `[myth] Build may still be running; re-subscribe with:  ${resubscribeHint}`,
         )
@@ -149,7 +157,16 @@ export async function pollBuildStatus(tree: string, opts: PollOptions): Promise<
           console.log(`[myth]   Sign in again, then re-attach with:  ${resubscribeHint}`)
           return { exitCode: 0, reason: 'auth_error' }
         }
-        if (e instanceof PublishError && e.code === 'unknown' && e.details?.status) {
+        if (e instanceof PublishError && e.code === 'status_unreadable') {
+          if ((e.details?.status ?? 0) >= 500) {
+            lastUnreadable = e
+            try {
+              await sleepFn(POLL_INTERVAL_MS, signal)
+            } catch {
+              return detached
+            }
+            continue
+          }
           console.log(`[myth] ✗ ${e.message}`)
           console.log(`[myth]   Re-attach with:  ${resubscribeHint}`)
           return { exitCode: 1, reason: 'status_unconfirmed' }
@@ -163,6 +180,7 @@ export async function pollBuildStatus(tree: string, opts: PollOptions): Promise<
       // A fetch that ignored the abort and resolved anyway must not print
       // status lines after "Detached".
       if (signal.aborted) return detached
+      lastUnreadable = null
 
       if (!result.available) {
         // Genuine endpoint-not-deployed (404 / non-JSON) — the only path

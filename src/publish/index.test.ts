@@ -8,8 +8,8 @@
  * promoted, but the GitHub Actions job reported green throughout.
  */
 
-import { describe, expect, it } from 'vitest'
-import { shouldStreamBuildStatus } from './index.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { shouldStreamBuildStatus, subscribeCommand } from './index.js'
 
 describe('shouldStreamBuildStatus', () => {
   const cases: Array<{
@@ -49,4 +49,25 @@ describe('shouldStreamBuildStatus', () => {
       expect(shouldStreamBuildStatus(opts)).toBe(expected)
     })
   }
+})
+
+describe('subscribeCommand', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    process.exitCode = undefined
+  })
+
+  it('sets exit code 1 when the build-status read is refused', async () => {
+    vi.stubEnv('MYTH_SESSION_TOKEN', 'fake.jwt')
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 403 })))
+    const consoleLogs: string[] = []
+    vi.spyOn(console, 'log').mockImplementation(msg => consoleLogs.push(msg as string))
+
+    await subscribeCommand({ tree: 'c'.repeat(64), apiUrl: 'https://api.test.example' })
+
+    expect(process.exitCode).toBe(1)
+    expect(consoleLogs.some(l => l.includes('HTTP 403') && l.includes('could not be confirmed'))).toBe(true)
+  })
 })

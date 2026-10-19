@@ -14,7 +14,7 @@
  *   - 401 → session expired; thrown as PublishError('session_expired').
  *   - 404 / non-JSON → { available: false } (endpoint not deployed yet, or
  *     older backend without Tier-2 tracking).
- *   - any other non-2xx → thrown as PublishError('unknown') with
+ *   - any other non-2xx → thrown as PublishError('status_unreadable') with
  *     details.status; the build result cannot be confirmed.
  */
 
@@ -86,7 +86,7 @@ export async function fetchBuildStatus(
   }
   if (!res.ok) {
     throw new PublishError(
-      'unknown',
+      'status_unreadable',
       `Build-status read returned HTTP ${res.status}; the publish's build result could not be confirmed.`,
       { status: res.status },
     )
