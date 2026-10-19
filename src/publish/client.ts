@@ -422,11 +422,19 @@ export async function mapErrorResponse(
     // another user, or a projectId the session lacks a write role on. The
     // stable `code` field is the discriminator; the message substring is a
     // fallback for workers predating it.
-    if (serverCode === 'project_ownership' || serverMsg?.includes('projectId')) {
+    if (serverCode === 'project_ownership' || (!serverCode && serverMsg?.includes('projectId'))) {
       return new PublishError(
         'not_owner',
         'This project belongs to another user (projectId ownership check failed). ' +
           'Check the "projectId" in myth.config.json.',
+        { status, shortName: ctx.shortName },
+      )
+    }
+    const aliasClaimed = serverMsg === 'shortName already claimed by a different publisher'
+    if (serverCode || (serverMsg && !aliasClaimed)) {
+      return new PublishError(
+        'name_taken',
+        `Publishing was refused by the server${serverCode ? ` (${serverCode})` : ''}: ${serverMsg ?? 'forbidden'}`,
         { status, shortName: ctx.shortName },
       )
     }
