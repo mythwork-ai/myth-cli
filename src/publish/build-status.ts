@@ -14,8 +14,6 @@
  *   - 401 → session expired; thrown as PublishError('session_expired').
  *   - 404 / non-JSON → { available: false } (endpoint not deployed yet, or
  *     older backend without Tier-2 tracking).
- *   - any other non-2xx → thrown as PublishError('status_unreadable') with
- *     details.status; the build result cannot be confirmed.
  */
 
 import { PublishError } from './client.js'
@@ -48,7 +46,7 @@ export interface BuildStatusOptions {
  * Fetch the current build status for `tree`.
  *
  * Never throws for "endpoint not available" — callers treat that path as
- * fire-and-forget fallback. Throws for every other non-2xx response.
+ * fire-and-forget fallback.
  */
 export async function fetchBuildStatus(
   tree: string,
