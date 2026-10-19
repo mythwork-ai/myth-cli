@@ -130,6 +130,7 @@ export class PublishError extends Error {
       | 'bad_bundle'
       | 'corrupt_pack'
       | 'network'
+      | 'status_unreadable'
       | 'unknown',
     message: string,
     public details?: { status?: number; hash?: string; shortName?: string },

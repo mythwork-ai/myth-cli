@@ -315,6 +315,96 @@ describe('pollBuildStatus — hard errors from the status endpoint are surfaced,
   })
 })
 
+function sequenceFetch(responses: Array<() => Response>): typeof fetch {
+  let i = 0
+  return vi.fn(async () => responses[Math.min(i++, responses.length - 1)]!()) as unknown as typeof fetch
+}
+
+const status503 = () => new Response('Service Unavailable', { status: 503 })
+const statusOk = () => jsonRes({ tree: TREE, builderVersion: 'v1', status: 'ok' })
+
+describe('pollBuildStatus — unreadable build status', () => {
+  it.each([true, false])('fails on the first poll when the status read is refused (403, deferred=%s)', async deferred => {
+    const consoleLogs: string[] = []
+    vi.spyOn(console, 'log').mockImplementation(msg => consoleLogs.push(msg as string))
+    const fakeFetch = sequenceFetch([() => jsonRes({ error: 'Forbidden' }, 403), statusOk])
+
+    const result = await pollBuildStatus(TREE, {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      deferred,
+      fetch: fakeFetch,
+      sleep: instantSleep,
+      now: makeFakeClock(POLL_INTERVAL_MS),
+      suppressSigint,
+    })
+
+    expect(result).toEqual({ exitCode: 1, reason: 'status_unconfirmed' })
+    expect(fakeFetch).toHaveBeenCalledTimes(1)
+    expect(consoleLogs.some(l => l.includes('HTTP 403') && l.includes('could not be confirmed'))).toBe(true)
+
+    vi.restoreAllMocks()
+  })
+
+  it('keeps polling past a single 503 and exits 0 on ok', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const result = await pollBuildStatus(TREE, {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      deferred: true,
+      fetch: sequenceFetch([status503, statusOk]),
+      sleep: instantSleep,
+      now: makeFakeClock(POLL_INTERVAL_MS),
+      suppressSigint,
+    })
+
+    expect(result).toEqual({ exitCode: 0, reason: 'ok' })
+
+    vi.restoreAllMocks()
+  })
+
+  it('fails naming the last status code when 503 persists until the timeout', async () => {
+    const consoleLogs: string[] = []
+    vi.spyOn(console, 'log').mockImplementation(msg => consoleLogs.push(msg as string))
+    const fakeFetch = sequenceFetch([status503])
+
+    const result = await pollBuildStatus(TREE, {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      deferred: true,
+      fetch: fakeFetch,
+      sleep: instantSleep,
+      now: makeFakeClock(POLL_INTERVAL_MS),
+      suppressSigint,
+    })
+
+    expect(result).toEqual({ exitCode: 1, reason: 'status_unconfirmed' })
+    expect((fakeFetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBeGreaterThan(1)
+    expect(consoleLogs.some(l => l.includes('HTTP 503') && l.includes('could not be confirmed'))).toBe(true)
+
+    vi.restoreAllMocks()
+  })
+
+  it('still exits 0 quietly on a 404', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response('Not Found', { status: 404 }),
+    ) as unknown as typeof fetch
+
+    const result = await pollBuildStatus(TREE, {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      deferred: true,
+      fetch: fakeFetch,
+      sleep: instantSleep,
+      now: makeFakeClock(POLL_INTERVAL_MS),
+      suppressSigint,
+    })
+
+    expect(result).toEqual({ exitCode: 0, reason: 'endpoint_unavailable' })
+  })
+})
+
 describe('pollBuildStatus — SIGINT cancellation (abort semantics)', () => {
   it('aborts an in-flight fetch on SIGINT and resolves promptly without extra output', async () => {
     const consoleLogs: string[] = []

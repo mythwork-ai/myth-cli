@@ -67,6 +67,7 @@ export type PollExitReason =
   | 'endpoint_unavailable'
   | 'auth_error'
   | 'stream_error'
+  | 'status_unconfirmed'
   | 'timeout'
   | 'sigint'
 
@@ -94,6 +95,7 @@ export async function pollBuildStatus(tree: string, opts: PollOptions): Promise<
 
   let printedPending = false
   let firstNoneAt: number | null = null
+  let lastUnreadable: PublishError | null = null
   const startedAt = nowFn()
 
   // SIGINT → detach cleanly. Aborting the controller FIRST makes the race
@@ -126,6 +128,11 @@ export async function pollBuildStatus(tree: string, opts: PollOptions): Promise<
 
       const elapsed = nowFn() - startedAt
       if (elapsed >= TOTAL_TIMEOUT_MS) {
+        if (lastUnreadable) {
+          console.log(`[myth] ✗ ${lastUnreadable.message}`)
+          console.log(`[myth]   Re-attach with:  ${resubscribeHint}`)
+          return { exitCode: 1, reason: 'status_unconfirmed' }
+        }
         console.log(
           `[myth] Build may still be running; re-subscribe with:  ${resubscribeHint}`,
         )
@@ -147,6 +154,20 @@ export async function pollBuildStatus(tree: string, opts: PollOptions): Promise<
           console.log(`[myth]   Sign in again, then re-attach with:  ${resubscribeHint}`)
           return { exitCode: 0, reason: 'auth_error' }
         }
+        if (e instanceof PublishError && e.code === 'status_unreadable') {
+          if ((e.details?.status ?? 0) >= 500) {
+            lastUnreadable = e
+            try {
+              await sleepFn(POLL_INTERVAL_MS, signal)
+            } catch {
+              return detached
+            }
+            continue
+          }
+          console.log(`[myth] ✗ ${e.message}`)
+          console.log(`[myth]   Re-attach with:  ${resubscribeHint}`)
+          return { exitCode: 1, reason: 'status_unconfirmed' }
+        }
         const msg = e instanceof Error ? e.message : String(e)
         console.log(
           `[myth] ⚠ Build-status stream stopped (${msg}); re-attach with:  ${resubscribeHint}`,
@@ -156,6 +177,7 @@ export async function pollBuildStatus(tree: string, opts: PollOptions): Promise<
       // A fetch that ignored the abort and resolved anyway must not print
       // status lines after "Detached".
       if (signal.aborted) return detached
+      lastUnreadable = null
 
       if (!result.available) {
         // Genuine endpoint-not-deployed (404 / non-JSON) — the only path
