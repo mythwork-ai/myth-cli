@@ -12,8 +12,10 @@
  * Error handling:
  *   - 400 → bad request (malformed tree); thrown as PublishError('bad_bundle').
  *   - 401 → session expired; thrown as PublishError('session_expired').
- *   - 404 / non-JSON / any other non-2xx → { available: false } (endpoint
- *     not deployed yet, or older backend without Tier-2 tracking).
+ *   - 404 / non-JSON → { available: false } (endpoint not deployed yet, or
+ *     older backend without Tier-2 tracking).
+ *   - any other non-2xx → thrown as PublishError('unknown') with
+ *     details.status; the build result cannot be confirmed.
  */
 
 import { PublishError } from './client.js'
@@ -46,8 +48,7 @@ export interface BuildStatusOptions {
  * Fetch the current build status for `tree`.
  *
  * Never throws for "endpoint not available" — callers treat that path as
- * fire-and-forget fallback. Only throws for hard errors (401, 400) that
- * the user must act on.
+ * fire-and-forget fallback. Throws for every other non-2xx response.
  */
 export async function fetchBuildStatus(
   tree: string,
@@ -80,9 +81,15 @@ export async function fetchBuildStatus(
     throw new PublishError('bad_bundle', 'Malformed tree hash sent to /build-status.')
   }
 
-  // 404 / 5xx / anything non-2xx or non-JSON → not available.
-  if (!res.ok) {
+  if (res.status === 404) {
     return { available: false }
+  }
+  if (!res.ok) {
+    throw new PublishError(
+      'unknown',
+      `Build-status read returned HTTP ${res.status}; the publish's build result could not be confirmed.`,
+      { status: res.status },
+    )
   }
 
   let parsed: unknown

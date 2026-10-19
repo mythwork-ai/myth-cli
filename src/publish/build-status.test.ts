@@ -93,12 +93,20 @@ describe('fetchBuildStatus', () => {
     expect(result).toEqual({ available: false })
   })
 
-  it('treats a 500 server error as endpoint unavailable', async () => {
+  it('throws with the HTTP status on a 500 server error', async () => {
     const fakeFetch = vi.fn(async () => textRes('Internal Server Error', 500)) as unknown as typeof fetch
 
-    const result = await fetchBuildStatus(TREE, { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch })
+    await expect(
+      fetchBuildStatus(TREE, { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'unknown', details: { status: 500 } })
+  })
 
-    expect(result).toEqual({ available: false })
+  it('throws with the HTTP status on a 403 refusal', async () => {
+    const fakeFetch = vi.fn(async () => jsonRes({ error: 'Forbidden' }, 403)) as unknown as typeof fetch
+
+    await expect(
+      fetchBuildStatus(TREE, { apiUrl: API, sessionToken: TOKEN, fetch: fakeFetch }),
+    ).rejects.toMatchObject({ code: 'unknown', details: { status: 403 } })
   })
 
   it('treats garbage / non-JSON response body as endpoint unavailable', async () => {

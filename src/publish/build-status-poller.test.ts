@@ -315,6 +315,74 @@ describe('pollBuildStatus — hard errors from the status endpoint are surfaced,
   })
 })
 
+describe('pollBuildStatus — deferred publish with an unreadable build status', () => {
+  it('fails with the HTTP status when the status read is refused (403)', async () => {
+    const consoleLogs: string[] = []
+    vi.spyOn(console, 'log').mockImplementation(msg => consoleLogs.push(msg as string))
+
+    const fakeFetch = vi.fn(async () =>
+      jsonRes({ error: 'Forbidden' }, 403),
+    ) as unknown as typeof fetch
+
+    const result = await pollBuildStatus(TREE, {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      deferred: true,
+      fetch: fakeFetch,
+      sleep: instantSleep,
+      now: makeFakeClock(POLL_INTERVAL_MS),
+      suppressSigint,
+    })
+
+    expect(result).toEqual({ exitCode: 1, reason: 'status_unconfirmed' })
+    expect(consoleLogs.some(l => l.includes('HTTP 403') && l.includes('could not be confirmed'))).toBe(true)
+
+    vi.restoreAllMocks()
+  })
+
+  it('fails when the status read hits a server error mid-build (503)', async () => {
+    let i = 0
+    const fakeFetch = vi.fn(async () =>
+      i++ === 0
+        ? jsonRes({ tree: TREE, builderVersion: 'v1', status: 'pending' })
+        : new Response('Service Unavailable', { status: 503 }),
+    ) as unknown as typeof fetch
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const result = await pollBuildStatus(TREE, {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      deferred: true,
+      fetch: fakeFetch,
+      sleep: instantSleep,
+      now: makeFakeClock(POLL_INTERVAL_MS),
+      suppressSigint,
+    })
+
+    expect(result).toEqual({ exitCode: 1, reason: 'status_unconfirmed' })
+
+    vi.restoreAllMocks()
+  })
+
+  it('still exits 0 quietly on a 404', async () => {
+    const fakeFetch = vi.fn(async () =>
+      new Response('Not Found', { status: 404 }),
+    ) as unknown as typeof fetch
+
+    const result = await pollBuildStatus(TREE, {
+      apiUrl: API,
+      sessionToken: TOKEN,
+      deferred: true,
+      fetch: fakeFetch,
+      sleep: instantSleep,
+      now: makeFakeClock(POLL_INTERVAL_MS),
+      suppressSigint,
+    })
+
+    expect(result).toEqual({ exitCode: 0, reason: 'endpoint_unavailable' })
+  })
+})
+
 describe('pollBuildStatus — SIGINT cancellation (abort semantics)', () => {
   it('aborts an in-flight fetch on SIGINT and resolves promptly without extra output', async () => {
     const consoleLogs: string[] = []
